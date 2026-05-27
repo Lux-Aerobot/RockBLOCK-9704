@@ -13,6 +13,8 @@
     #include "serial_presets/serial_windows/serial_windows.h"
 #elif defined(ARDUINO) && defined(__cplusplus)
     #include "serial_presets/serial_arduino/serial_arduino.h"
+#elif defined(STM32_HAL)
+    #include "serial_presets/serial_stm32/serial_stm32.h"
 #endif
 
 #ifdef __cplusplus
@@ -138,6 +140,8 @@ void rbRegisterCallbacks(const rbCallbacks_t *callbacks);
         #define SERIAL_CONTEXT_SETUP_FUNC setContextWindows
     #elif ARDUINO
         #define SERIAL_CONTEXT_SETUP_FUNC setContextArduino
+    #elif defined(STM32_HAL)
+        #define SERIAL_CONTEXT_SETUP_FUNC setContextStm32
     #endif
 #endif
 
@@ -176,11 +180,11 @@ typedef enum
      * @brief Initialise the the serial connection in the detected context (or user defined),
      * if successful continue to set the API, SIM & state of the modem in order
      * to be ready for messaging. (ARDUINO VERSION)
-     * 
-     * @note Make sure you wait at least 100ms after calling this function for the first time after 
-     * reboot before doing anything else to prevent unexpected behaviour. This gives the modem time 
+     *
+     * @note Make sure you wait at least 100ms after calling this function for the first time after
+     * reboot before doing anything else to prevent unexpected behaviour. This gives the modem time
      * to acknowledge its new settings.
-     * 
+     *
      * @param port reference to serial object.
      * @return bool depicting success or failure.
      */
@@ -188,16 +192,33 @@ typedef enum
 
     // Redefine extern C
     extern "C" {
+#elif defined(STM32_HAL)
+    /**
+     * @brief Initialise the the serial connection using the given HAL UART handle
+     * and continue to set the API, SIM & state of the modem in order to be ready
+     * for messaging. (STM32 HAL VERSION)
+     *
+     * The UART must already be initialised by CubeMX-generated MX_USARTx_UART_Init()
+     * at 230400 baud, 8N1, no flow control. The user must also forward
+     * HAL_UART_RxCpltCallback() to rb9704UartRxCpltCallback() — see serial_stm32.h.
+     *
+     * @note Make sure you wait at least 100ms after calling this function for the
+     * first time after reboot before doing anything else.
+     *
+     * @param huart pointer to the HAL UART handle.
+     * @return bool depicting success or failure.
+     */
+    bool rbBegin(UART_HandleTypeDef * huart);
 #else
     /**
      * @brief Initialise the the serial connection in the detected context (or user defined),
      * if successful continue to set the API, SIM & state of the modem in order
      * to be ready for messaging.
-     * 
-     * @note Make sure you wait at least 100ms after calling this function for the first time after 
-     * reboot before doing anything else to prevent unexpected behaviour. This gives the modem time 
+     *
+     * @note Make sure you wait at least 100ms after calling this function for the first time after
+     * reboot before doing anything else to prevent unexpected behaviour. This gives the modem time
      * to acknowledge its new settings.
-     * 
+     *
      * @param port pointer to port name.
      * @return bool depicting success or failure.
      */

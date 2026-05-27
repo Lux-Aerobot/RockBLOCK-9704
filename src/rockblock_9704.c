@@ -13,6 +13,8 @@
 #if defined(_WIN32)
 #include <io.h>
 #define access _access
+#elif defined(STM32_HAL)
+/* Bare-metal: no unistd. crossplatform.h provides millis()/delay(). */
 #else
 #include <unistd.h>
 #endif
@@ -155,7 +157,7 @@ bool setApi(void)
     bool set = false;
     for(int i = 0; i < 2; i++)
     {
-#ifdef ARDUINO
+#if defined(ARDUINO) || defined(STM32_HAL)
         delay(5);
 #else
         usleep(5000);
@@ -270,7 +272,35 @@ bool setState(void)
     return set;
 }
 
-#ifndef ARDUINO
+#if defined(STM32_HAL)
+bool rbBegin(UART_HandleTypeDef * huart)
+{
+    bool began = false;
+    if(SERIAL_CONTEXT_SETUP_FUNC(huart, RB9704_BAUD))
+    {
+        if(context.serialInit != NULL)
+        {
+            if(context.serialInit())
+            {
+                clearLeftoverData();
+                serialState = OPEN;
+                if(setApi())
+                {
+                    if(setSim())
+                    {
+                        if(setState())
+                        {
+                            imtQueueInit(); //initialise (clean) the queue
+                            began = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return began;
+}
+#elif !defined(ARDUINO)
 bool rbBegin(const char* port)
 {
     bool began = false;

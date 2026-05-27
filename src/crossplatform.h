@@ -29,6 +29,11 @@ extern "C" {
 
     unsigned long millis(void);
     void delay(uint32_t ms);
+#elif defined(STM32_HAL)
+    #include <stdint.h>
+
+    unsigned long millis(void);
+    void delay(uint32_t ms);
 #endif
 
 #ifdef __cplusplus

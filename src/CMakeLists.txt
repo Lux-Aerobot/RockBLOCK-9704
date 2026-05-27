@@ -16,6 +16,7 @@ add_library(
     serial_presets/serial_linux/serial_linux.c
     serial_presets/serial_windows/serial_windows.c
     serial_presets/serial_arduino/serial_arduino.cpp
+    serial_presets/serial_stm32/serial_stm32.c
     ${THIRD_PARTY_DIR}/cJSON/cJSON.c
     ${THIRD_PARTY_DIR}/base64/base64.c)
 

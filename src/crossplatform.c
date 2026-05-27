@@ -45,4 +45,21 @@ void delay(uint32_t ms)
     usleep(ms * 1000); // usleep takes microseconds
 }
 
+#elif defined(STM32_HAL)
+
+#ifndef RB9704_STM32_HAL_HEADER
+#define RB9704_STM32_HAL_HEADER "main.h"
+#endif
+#include RB9704_STM32_HAL_HEADER
+
+unsigned long millis(void)
+{
+    return (unsigned long)HAL_GetTick();
+}
+
+void delay(uint32_t ms)
+{
+    HAL_Delay(ms);
+}
+
 #endif

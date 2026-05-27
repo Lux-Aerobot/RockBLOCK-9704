@@ -98,6 +98,7 @@ if (BUILD_PYTHON_SHARED_LIBRARY STREQUAL "ON")
         ${SRC_DIR}/serial_presets/serial_linux/serial_linux.c
         ${SRC_DIR}/serial_presets/serial_windows/serial_windows.c
         ${SRC_DIR}/serial_presets/serial_arduino/serial_arduino.cpp
+        ${SRC_DIR}/serial_presets/serial_stm32/serial_stm32.c
         ${PYTHON_SRC_DIR}/rockblock.c
     )
     target_include_directories(${PYTHON_SHARED_LIB} PRIVATE ${Python3_INCLUDE_DIRS} ${IRIDIUM_IMT_LIB})
