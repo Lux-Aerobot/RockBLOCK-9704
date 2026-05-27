@@ -484,6 +484,28 @@ Sketch in `LUX_DEVLOG.md` 2026-05-27. To turn into a spec:
       1–5 s). L0 resets if it misses M consecutive (TBD, probably
       3–5). L4 logs if L0 reset events repeat — symptomatic of
       modem-subsystem instability.
+- [ ] **Heartbeat MO as MT-puller** ⭐. Field test 2026-05-27
+      confirmed: when an MO completes successfully, the Iridium
+      gateway opportunistically drains any held MTs in the same
+      session. This is a clean active-polling mechanism for inbound
+      commands. Design implication:
+      - L4 schedules small heartbeat MOs at cadence N (TBD; 5–30 min
+        depending on power/cost tolerance) on a low-priority topic.
+      - L0 forwards them via `rbSendMessageAsync`.
+      - Successful MO → gateway pushes held MTs → L0 forwards each
+        to L4 as `EVT,SEQ,RB,MT,...`.
+      - Tunable knob: heartbeat cadence trades MT-pull latency
+        bound vs. sat-byte cost.
+      - Distinct from the L4 ↔ L0 link `PING` command (which is the
+        local inter-MCU heartbeat); the heartbeat MO is the
+        radio-side periodic ping. Probably want a separate
+        `CMD,SEQ,RB,HEARTBEAT` from L4 to L0 that fires this so the
+        cadence policy lives on L4.
+      - Topic choice: cheapest provisioned topic (probably RAW or
+        a dedicated heartbeat topic if Cloudloop billing supports
+        it).
+      - See `LUX_DEVLOG.md` 2026-05-27 field-test entry for the
+        observation that prompted this.
 
 ### Deferred (re-enters with EO companion)
 

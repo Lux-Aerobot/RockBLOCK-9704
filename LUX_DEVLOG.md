@@ -657,19 +657,172 @@ The full retargeting pass on the TODO doc waits until we know the L0
 part and have the EE's USB-host findings — both shape the work
 materially.
 
+### Field test (evening): genuine outdoor capture with multiple confirmed deliveries
+
+Took the dev kit outdoors to `45.4012841, -75.6301899` (Ottawa,
+partial sky view). Captured ~50 min of `link_monitor.py` output
+with multiple MT deliveries and MO sends. Raw logs archived in
+`examples/sample-traces/2026-05-27-*.log`. User-annotated notes in
+`2026-05-27-field-test-notes.md` alongside.
+
+This single field test produced three substantive findings that
+update our mental model. The Iridium MT delivery model in
+particular is now significantly clearer than before.
+
+### Finding 1: MO completions drain the MT queue ⭐
+
+The standout finding. When the modem successfully completes an MO
+send, **the Iridium gateway opportunistically pushes any held MTs
+to the modem in the same session.** Directly observed multiple
+times during the field test.
+
+Not documented anywhere I've found, but architecturally obvious in
+hindsight: the modem is already in active comms for the MO, the
+gateway has the modem on the line, pushing held MTs is free
+piggyback rather than waiting for the next retry timer.
+
+**Architectural implication**: this is a clean *active polling*
+mechanism for inbound commands. Application can periodically send
+a small "heartbeat" MO to actively pull held MTs, rather than
+waiting passively for the gateway to ring. Becomes a tunable
+latency-vs-cost knob:
+
+| Heartbeat cadence | MT-pull latency bound | Sat-bytes/day cost     |
+|-------------------|-----------------------|------------------------|
+| Every 5 min       | ≤ 5 min               | ~288 heartbeats × ~few bytes |
+| Every 30 min      | ≤ 30 min              | ~48 heartbeats         |
+| Only-when-needed  | Unbounded             | Free (rides on real telemetry) |
+
+Folded into TODO as a new design pattern under the L0 ↔ L4
+protocol design — see "Heartbeat MO as MT-puller" item.
+
+The scheduled-telemetry cadence we'd already been thinking about
+for power-budget reasons now serves double duty as the MT-pull
+mechanism. Cleaner architecture, fewer moving parts.
+
+### Finding 2: Cluster delivery directly confirmed
+
+Two distinct cluster-delivery events in this trace, in the same
+session:
+
+- `21:29:15Z` — MT id=8 `"Hello Lux!"` and MT id=9 `"Hello from Lux 2!"`
+  arrive in the same second
+- `21:45:12Z` — MT id=14 `"swamp the system"` and MT id=15
+  `"how about now?"` arrive in the same second
+
+Plus the user's field notes: "4 messages delivered in <1 s on a
+retry today" — an even larger cluster outside the captured window.
+
+The "drain on registration / drain on session" model is now
+empirically locked. Multiple pending MTs flush together whenever a
+viable session opens, whether triggered by registration or by an
+MO send.
+
+### Finding 3: Signal climbs *during* a session — interesting selection-vs-mechanism question
+
+Every MT delivery in the trace is preceded by a signal climb,
+often from 1–2 bars to 4–5 bars within ~5 seconds before the MT
+event. Two plausible explanations the trace alone can't
+distinguish:
+
+1. **Selection effect**: the modem only attempts the full delivery
+   handshake when a satellite is genuinely accessible. We see
+   "successful MTs preceded by good signal" because failed
+   attempts at bad signal don't show up as MT events at all. The
+   boring statistical explanation.
+2. **Active link optimisation**: the modem actively selects the
+   best-visible satellite once a session begins (beam-steering,
+   frequency hopping, satellite hand-off). The elevated signal is
+   a *consequence* of an active session rather than its
+   precondition.
+
+If (2), the implication is: signal *during* an attempted send is
+the relevant metric, not signal *before*. Worth probing later
+with deliberate sends at known-low-signal moments. MT id=18 at
+21:48:00 was delivered with 2/5 signal at the moment of receipt
+— hints at "marginal signal can still complete delivery once the
+session is established."
+
+### Updated mental model: Iridium MT delivery has three drain triggers
+
+Previous (post-yesterday's walkback): gateway retries on some
+cadence; the cadence was unclear.
+
+New (after field test): the gateway delivers held MTs in response
+to **any** of these events:
+
+1. **Modem registers** with the network (re-acquired event every
+   power-up, every emergence from coverage gap)
+2. **Modem completes an MO send** (the newly-confirmed trigger)
+3. **Fallback retry timer** (cadence still TBD, but no longer the
+   primary mechanism)
+
+In good conditions, **end-to-end MT delivery latency observed at
+~30–60 s** under this model.
+
+### Walked back: the "~6 min retry cadence" claim was off
+
+User's field-test notes confirm "Successful deliveries in ~30–60 s"
+under good signal — much faster than my yesterday "~6 min retry"
+claim. The 12:39:25 → 12:45:40 gap I'd seen yesterday was just
+reception-window-driven, not retry-cadence-driven. Same single-data-
+point inference error I keep making.
+
+The fallback retry timer probably still exists but is not the
+binding constraint when reception is OK and the application is
+actively sending. Logged as a residual mystery; not worth probing
+unless we hit a case where it matters.
+
+### Implications for the L0 ↔ L4 protocol design
+
+- **Heartbeat MO as MT-puller**: new design pattern, captured in
+  TODO. The L4 schedules small heartbeat MOs; L0 forwards them as
+  IMT messages; gateway responds by draining any held MTs in the
+  same session.
+- **MT acknowledgement timing question**: the previous concern
+  about slow command execution blocking the MT queue is less
+  acute given the cluster-drain behaviour — the queue empties
+  fast when sessions open. But it still matters if the next
+  session is far off (deep-sleep policy or extended coverage
+  gaps).
+- **Signal-as-MO-trigger**: probably *don't* gate MO sends on
+  high signal at this layer. The selection-vs-mechanism question
+  on signal climb means a "wait for good signal" rule may
+  artificially suppress sends that would have succeeded.
+
+### Trace data archived for reference
+
+Three new files in `examples/sample-traces/`:
+
+- `2026-05-27-field-test-good-rf.log` — ~50 min outdoor capture
+  with 12 MT deliveries and 2 MO sends
+- `2026-05-27-walk-home-balcony.log` — mobility / hand-off trace
+  during the walk back
+- `2026-05-27-field-test-notes.md` — user-annotated observations
+
+These now form the "known partial-sky-view reference" against
+which future runs (true rooftop, marginal indoor, etc.) can be
+compared. Not a *clean* good-RF baseline — that's still
+outstanding — but a much better dataset than yesterday's window
+placement.
+
 ### State at end of session
 
 - STM32 port code: bring-up branch is functional, GPIO state machine
   not yet started.
-- Hardware: dev kit verified end-to-end through window placement, with
-  marginal reception observed.
-- Outstanding: GPIO state machine implementation (conditional),
-  production-board GPIO allocation (conditional), 3-message MT
-  experiment, eventual park trip for "good RF" baseline.
+- Hardware: dev kit verified end-to-end with multiple MT/MO round-
+  trips under genuine outdoor partial-sky conditions.
+- Outstanding: GPIO state machine implementation (conditional on
+  USB-host investigation), production-board GPIO allocation
+  (conditional), true unobstructed-sky baseline trace.
 - Architecture: two-MCU split (L0 modem manager + L4 main avionics)
-  locked in. Most other questions still open but with clearer scope.
-- link_monitor.py reframed from debugging convenience to QA baseline
-  tool — implications for the Forge test fixture flagged in TODO.
+  locked in.
+- Iridium delivery model: now substantially clearer — three drain
+  triggers (registration, MO completion, retry timer), with the
+  MO-completion trigger discovered today as the basis for
+  active-polling MT-pull pattern.
+- link_monitor.py confirmed as the QA baseline tool; first
+  reference traces archived.
 - Branch `lux/stm32-l452-port` pushed to Lux-Aerobot fork. Branch
   name now slightly misleading — production target is L0, not L452.
   Worth a rename on next push, or just retain as the "bring-up
