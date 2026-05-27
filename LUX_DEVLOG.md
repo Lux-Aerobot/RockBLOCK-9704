@@ -548,15 +548,130 @@ deployment site), and whether the modem's own TX from inside a
 re-emitter bay could interfere with neighbouring units doing
 acceptance.
 
+### Architecture pivot: dedicated modem MCU
+
+Significant scope decision: the 9704 will be managed by a dedicated
+**L0-class STM32**, not by the L452 main avionics MCU. The L0 owns the
+modem; the L4 talks to the L0 over a UART link as a client of an L0-
+side message API.
+
+```
+   9704 ─── UART or USB ─── L0 (modem mgr) ─── UART ─── L4 (avionics)
+```
+
+Drivers for the decision:
+- **Power**: L0-class chips are much lower draw than L4.
+- **Isolation**: modem-subsystem faults can't take down main avionics.
+- **Architectural generality**: the "STM32 owns modem, companion is a
+  client" pattern we'd been sketching for the EO use case isn't an
+  EO-specific thing — it's the product architecture. L4 is now the
+  primary client; EO companion (when re-introduced in a later HW rev)
+  becomes a second client of the same API, most likely routed through
+  L4 rather than directly to L0.
+
+EE is investigating USB-host-capable USB-UART converter chips that
+would let the 9704 connect via its USB-C port (with hardware
+sequencing handled by the modem's USB hardware). If a workable part
+exists, **the GPIO interlock state machine goes away entirely** — no
+`P_EN`/`I_EN`/`I_BTD` dance, no damage-prevention interlock, no
+deferred-UART-init complexity. TBD pending part availability and
+licensing/availability of L0 USB host support.
+
+### Decisions locked this session
+
+| Question                              | Decision                                                       |
+|---------------------------------------|----------------------------------------------------------------|
+| EO companion in this HW rev           | **Deferred entirely.** L4 is the only client of the L0 API.   |
+| L0 ↔ L4 protocol shape                | Text-based, modelled on the existing ACTU SS protocol (see   |
+|                                       | Notion: ACTU SS v0.1) — `<TYPE>,<SEQ>,<TARGET>,<CMD>,<ARGS>\n`|
+|                                       | with `CMD`/`ACK`/`ERR`/`STAT`/(`EVT`) message types. Same    |
+|                                       | shape already implemented & proven on actuator links.        |
+| Boot sequencing                       | L0 idles waiting for first `PING` from L4. L4 starts comms.  |
+| L0 power policy (this HW rev)         | **Always on.** Deep-sleep deferred until power profiling     |
+|                                       | justifies the added state-machine complexity.                |
+| Heartbeat / watchdog                  | `PING`/`ACK` in the protocol. Already part of ACTU SS.       |
+| MO outbox location                    | **L4-side.** L0 has only enough RAM for the in-flight MO +   |
+|                                       | maybe one queued. L4 holds the application outbox.           |
+| `consolePrintf` retarget              | **Skip for production.** Keep for bring-up; drop if it      |
+|                                       | causes blocking issues. No DMA TX work needed.               |
+
+### Protocol design sketch (for later detailed design)
+
+Mirroring ACTU SS, with `RB` as the target identifier for the 9704
+subsystem and an additional `EVT` type for unsolicited modem events:
+
+```
+CMD,<SEQ>,RB,SEND_MO,<TOPIC>,<HEX_PAYLOAD>     -- L4 enqueues an MO
+ACK,<SEQ>,RB,SEND_MO,<MO_ID>                   -- L0 accepted, assigned modem ID
+ERR,<SEQ>,RB,<CODE>                            -- rejection w/ error code
+
+CMD,<SEQ>,RB,PING                              -- L4 heartbeat
+ACK,<SEQ>,RB,PING                              -- L0 alive
+
+EVT,<SEQ>,RB,MT,<TOPIC>,<HEX_PAYLOAD>          -- unsolicited inbound MT
+EVT,<SEQ>,RB,MO_COMPLETE,<MO_ID>,<STATUS>      -- MO send result
+EVT,<SEQ>,RB,SIG,<BARS>,<LEVEL>,<VISIBLE>      -- signal change
+
+STAT,<SEQ>,RB,STATE,<REGISTERED|NOT_REG|FAIL>  -- periodic
+```
+
+Binary payload encoding TBD (hex vs base64 — hex is simpler to parse,
+base64 is denser by ~25%). Probably hex for v0.1 given how small most
+MO payloads will be; revisit when thumbnails come back into scope.
+
+There's a pleasing architectural symmetry here: the L0 sits between
+two line-oriented text protocols (JSPR on the modem side, ACTU-style
+on the L4 side) and effectively translates between them. Both are
+ASCII, newline-terminated, sequence-numbered. The L0's job reduces to:
+parse line → dispatch → call library function → encode result line.
+
+### Still open
+
+- **Exact L0 part.** TBD pending RAM budget review against library
+  fixed costs (~17 KB before any user buffers).
+- **9704 connection**: USB-C via host converter (if EE finds a
+  workable part) vs 16-pin with the GPIO interlock state machine.
+- **Protocol command set details.** Shape settled, but exact CMDs,
+  EVT types for unsolicited modem events, binary encoding choice,
+  error codes, and ACT_ID/TARGET allocation strategy still to
+  design.
+
+### Implication for the work already on the branch
+
+Most of what we built still applies, with L0 substituted for L4:
+
+- Serial preset (`serial_stm32.{c,h}`): same HAL API on L0, no change
+- `crossplatform.{c,h}`: same
+- `rbBegin(UART_HandleTypeDef *)`: same
+- TX timeout, MT print fix: same
+- Nucleo-L452RE bring-up example: keep as reference; once L0 part is
+  selected, port pin assignments and clock setup (Cortex-M0+ vs M4,
+  different family HAL header, lower max clock)
+- GPIO state machine TODO: **conditional on USB-host outcome**
+- All application-layer reliability TODOs: live on either L0 or L4,
+  needs deliberate split — most likely SD logging on L4, library-
+  level retry/seq on L0
+- Companion arbitration TODOs: **fold into L0 ↔ L4 protocol design**
+
+The full retargeting pass on the TODO doc waits until we know the L0
+part and have the EE's USB-host findings — both shape the work
+materially.
+
 ### State at end of session
 
 - STM32 port code: bring-up branch is functional, GPIO state machine
   not yet started.
 - Hardware: dev kit verified end-to-end through window placement, with
-  marginal reception (~6 min retry latency observed).
-- Outstanding: GPIO state machine implementation, production-board
-  GPIO allocation, 3-message MT experiment, eventual park trip for
-  "good RF" baseline.
-- Open design questions logged but not yet decided.
+  marginal reception observed.
+- Outstanding: GPIO state machine implementation (conditional),
+  production-board GPIO allocation (conditional), 3-message MT
+  experiment, eventual park trip for "good RF" baseline.
+- Architecture: two-MCU split (L0 modem manager + L4 main avionics)
+  locked in. Most other questions still open but with clearer scope.
 - link_monitor.py reframed from debugging convenience to QA baseline
   tool — implications for the Forge test fixture flagged in TODO.
+- Branch `lux/stm32-l452-port` pushed to Lux-Aerobot fork. Branch
+  name now slightly misleading — production target is L0, not L452.
+  Worth a rename on next push, or just retain as the "bring-up
+  reference" branch and create a fresh `lux/l0-modem-mgr` once the
+  L0 part is selected.

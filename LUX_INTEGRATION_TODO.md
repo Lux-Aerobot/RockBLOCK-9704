@@ -4,8 +4,18 @@ Working notes for integrating the RockBLOCK-9704 library into the Lux node
 firmware. Lives next to the upstream README so it travels with the submodule;
 keep it Lux-specific so we can rebase the submodule cleanly.
 
-Target hardware: Nucleo-L452RE (dev) / STM32L452VCT6 (production), bare-metal,
-HAL drivers, super-loop.
+**Architecture (locked 2026-05-27):** two-MCU split. A dedicated L0-class
+STM32 owns the 9704 modem. The L4 (STM32L452) main avionics MCU talks to
+the L0 over a UART link as a client of an L0-side message API modelled on
+the ACTU SS protocol. EO companion deferred to a future HW revision; will
+re-enter as a second client of the same L4-side API (likely routed through
+L4 rather than direct to L0).
+
+See `LUX_DEVLOG.md` 2026-05-27 entry for full decision context and the
+protocol design sketch.
+
+Bring-up dev hardware: Nucleo-L452RE. Production split: L0 (TBD part) +
+STM32L452VCT6. Bare-metal, HAL drivers, super-loop.
 
 ---
 
@@ -276,6 +286,11 @@ Sub-questions:
 
 ### Modem power-state policy: when on, when cycled?
 
+**Resolved for this HW rev (2026-05-27): always on.** Deep-sleep
+cycling deferred until power-budget profiling on real hardware shows
+it's worth the state-machine complexity. Keeping the discussion below
+for the future revisit.
+
 The 9704 has non-trivial idle power (especially with the receiver
 active for MT delivery). Three rough policies:
 
@@ -322,6 +337,75 @@ Sub-questions:
 - How do we report power-state transitions to ground for
   observability?
 
+### L0 part selection
+
+The library's fixed buffer cost is ~17 KB before any user buffers:
+
+- `jsprRxBuffer` — 8 KB
+- `JSPR_MAX_JSON_LENGTH` (response.json) — 3.5 KB
+- `BASE64_TEMP_BUFFER` — 2 KB
+- `COMMAND_MAX_LEN` (jsprCommandBuffer) — 2 KB
+- Misc state, RX ring buffer, etc. — ~1.5 KB
+
+Plus per-message:
+- `IMT_QUEUE_SIZE × IMT_PAYLOAD_SIZE × 2` (MO + MT) — variable.
+  At queue size 1 and payload 342 B (one Iridium segment + CRC):
+  ~700 B.
+
+So ~18 KB floor on L0. Plus protocol parser, app code, stack, etc.
+Realistic minimum: ~24 KB SRAM, comfortable: ~32 KB+.
+
+STM32L0 candidates:
+
+| Part      | Flash | SRAM | Fit? |
+|-----------|-------|------|------|
+| L011/L021 | 16 KB | 2 KB | No — way too small |
+| L031/L041 | 32 KB | 8 KB | No |
+| L051/L052 | 64 KB | 8 KB | No |
+| L053      | 64 KB | 8 KB | No |
+| L062/L063 | 32 KB | 8 KB | No |
+| L071/L072 | 192 KB| 20 KB| Tight but feasible (with `IMT_PAYLOAD_SIZE=342`, queue size 1) |
+| L073/L083 | 192 KB| 20 KB| Same as L07x |
+
+If the library's fixed JSPR buffers were made configurable (upstream
+improvement TODO), the floor could drop to ~10 KB, making smaller L0
+parts viable. **Action**: probably L073/L083 baseline; revisit if
+upstream patches land.
+
+Sub-questions:
+
+- Package preference (LQFP / BGA / WLCSP) per the production board?
+- Do we want any peripherals beyond UART × 2 + GPIO? (e.g. ADC for
+  modem temperature monitoring, I2C for an EEPROM with the L0's
+  configuration?)
+- Does keeping a common HAL/CubeMX vendor for L0 + L4 simplify the
+  toolchain enough to be a deciding factor vs (e.g.) an Ambiq Apollo
+  or NXP equivalent? (Probably yes — staying in STM32 land is
+  cheap.)
+
+### 9704 connection: USB-C vs 16-pin
+
+EE is investigating USB-host-capable USB-UART converter chips. If a
+viable part exists, 9704 connects via its USB-C port, modem-side
+hardware handles startup/shutdown sequencing, and the GPIO interlock
+state machine goes away entirely.
+
+Sub-questions / TBD:
+
+- What part(s) does the EE find viable? Candidates likely include
+  FT311D, FT312D, FT4222H, MAX3421E (with SPI host driver on L0),
+  VNC2.
+- Does the L0 part itself have any USB host capability? (STM32L4
+  Plus has it; classic L0 typically does not.)
+- Cost/BOM impact vs the GPIO solution's software cost.
+- Power budget impact — USB-host bridges have their own idle draw.
+- Licensing/regulatory: any restrictions on the USB host approach
+  for satellite-comms hardware?
+
+Until resolved, treat the GPIO state machine TODO as
+**conditionally needed** — it's the fallback if no USB-host part
+works out.
+
 ---
 
 ## Super-loop integration with other I/O
@@ -352,41 +436,66 @@ loop budget gets tight.
 
 ---
 
-## Companion computer (EO imaging) arbitration
+## L0 ↔ L4 protocol design
 
-Decision: STM32 always owns the modem. Companion is a client of an
-STM32-side message API, not a co-owner of the UART.
+(Was: companion computer / EO imaging arbitration. EO companion deferred
+in this HW rev — re-enters in a future revision as a second client of
+the same L4-side API. Most of the original arbitration thinking now
+applies to the L4 ↔ L0 link instead.)
 
-Local link from companion → STM32: TBD (one of the spare UARTs or SPI).
-SLIP or COBS framing recommended for clean delimiters.
+Decision (2026-05-27): text-based protocol modelled on the existing
+ACTU SS spec. Format `<TYPE>,<SEQ>,<TARGET>,<CMD>,<ARGS...>\n`. Types
+include `CMD`/`ACK`/`ERR`/`STAT` plus a new `EVT` type for unsolicited
+modem events. Same shape already in production on actuator links.
 
-- [ ] **Pick the companion link** (UART vs SPI, baud, framing).
+Sketch in `LUX_DEVLOG.md` 2026-05-27. To turn into a spec:
+
+- [ ] **Decide L4 ↔ L0 link parameters**: baud (probably 230400 to
+      match modem-side, or 115200), parity, hardware flow control
+      yes/no.
 - [ ] **Provision dedicated topics** in Cloudloop:
       - 315 (RED) — telemetry
-      - 316 (ORANGE) — imagery
+      - 316 (ORANGE) — imagery (deferred in this HW rev; provision
+        anyway so it's ready when EO returns)
       - TBD — commands inbound
-- [ ] **Specify the companion ↔ STM32 protocol.** Rough sketch:
-      ```
-      Companion → STM32:
-        CMD_ENQUEUE_MSG  topic_id  length  data...
-        CMD_QUERY_STATUS msg_id
-        CMD_CANCEL       msg_id
-      STM32 → Companion:
-        STATUS_QUEUED    msg_id
-        STATUS_SENT      msg_id
-        STATUS_FAILED    msg_id  reason
-        STATUS_REJECTED  reason  (queue full, not provisioned, etc.)
-        RECEIVED         topic_id  length  data...     (forwarded MT)
-      ```
-- [ ] **Application-level priority queue** (separate from IMT queue).
-      `PRI_TELEMETRY` > `PRI_THUMBNAIL` > `PRI_OPPORTUNISTIC`. STM32 drains
-      its app queue into `rbSendMessageAsync` when conditions allow.
+- [ ] **Define the v0.1 command set.** Minimum viable list:
+      - `CMD,SEQ,RB,PING` / `ACK,SEQ,RB,PING` (heartbeat)
+      - `CMD,SEQ,RB,SEND_MO,TOPIC,HEX_PAYLOAD` /
+        `ACK,SEQ,RB,SEND_MO,MO_ID` /
+        `EVT,SEQ,RB,MO_COMPLETE,MO_ID,STATUS`
+      - `EVT,SEQ,RB,MT,TOPIC,HEX_PAYLOAD` (unsolicited)
+      - `EVT,SEQ,RB,SIG,BARS,LEVEL,VISIBLE` (signal change)
+      - `STAT,SEQ,RB,STATE,REGISTERED|NOT_REG|FAIL` (periodic)
+      - `CMD,SEQ,RB,GET_STATUS` / status reply
+      Error code set TBD; at minimum `QUEUE_FULL`, `NOT_PROVISIONED`,
+      `INVALID_TOPIC`, `INVALID_ARGS`, `MODEM_FAULT`.
+- [ ] **Binary-payload encoding choice.** Hex (simple, ~100% overhead)
+      vs base64 (denser, ~33% overhead, slightly fiercer parser).
+      Recommendation: hex for v0.1 since MO/MT payloads are typically
+      <300 B. Revisit when thumbnails return.
+- [ ] **L4-side outbox design.** Multi-tier priority queue (telemetry
+      > thumbnail > opportunistic, even though only telemetry exists
+      in this HW rev). L4 drains into L0 via `SEND_MO` when L0 has
+      capacity (signalled by L0 acking previous sends).
+- [ ] **Sequence-number space and dedup policy.** Per-direction
+      monotonic; receiver dedups by SEQ. ACTU SS already has this
+      pattern; carry it over.
+- [ ] **Heartbeat policy.** L4 pings L0 every N seconds (TBD, probably
+      1–5 s). L0 resets if it misses M consecutive (TBD, probably
+      3–5). L4 logs if L0 reset events repeat — symptomatic of
+      modem-subsystem instability.
+
+### Deferred (re-enters with EO companion)
+
+- [ ] **EO companion routing.** Through L4 (preferred), or direct to
+      L0 via additional UART. Picks up when EO comes back into scope.
+- [ ] **Multi-tier priority queue activation.** Telemetry vs thumbnail
+      vs opportunistic ordering becomes meaningful when there are
+      multiple clients.
 - [ ] **Thumbnail size budget.** Decide max thumbnail size — drives
-      `IMT_PAYLOAD_SIZE`. Working assumption: 10 KB (one IMT message,
-      ~30–60 s sat TX). Bump if companion can't compress that hard.
-- [ ] **Power policy.** STM32 owns `P_EN`/`I_EN` GPIOs. Modem off when
-      no MO/MT activity scheduled, on when companion submits or
-      telemetry cadence fires.
+      `IMT_PAYLOAD_SIZE` on L0. Working assumption: 10 KB (one IMT
+      message). Bump if companion can't compress that hard. May
+      force a larger L0 part than the bare-minimum 20 KB option.
 
 ---
 
