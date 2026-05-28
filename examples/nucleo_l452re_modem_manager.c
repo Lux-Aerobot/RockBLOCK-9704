@@ -73,14 +73,22 @@
  * directly compatible with the L452 at 3.3 V, no level shifting needed.
  *
  * ---------------------------------------------------------------------------
- * CubeMX setup for this file:
- *   - USART2: 115200 8N1 (console via ST-LINK VCP). Keep CubeMX's default.
- *   - USART1: 230400 8N1 — but do NOT assign PA9 to USART1_TX in the .ioc.
- *     Leave PA9 as a GPIO output (we switch it to AF7 in firmware at boot).
- *     PA10 may stay USART1_RX (only used from step 2).
- *   - PC0/PC1/PC2/PC3, PA9, button, LED: this file's modem_pins_init()
- *     configures them in USER CODE, so they survive CubeMX regeneration.
- *   - Define SIMULATE_IBTD (e.g. project symbol) for bench testing.
+ * CubeMX setup for this file (step 1):
+ *   - Pick the Nucleo-L452RE board defaults: USART2 (115200 8N1) on the
+ *     ST-LINK VCP, B1 button, LD2 LED, default clock. That is all you need.
+ *   - Do NOT configure USART1 in CubeMX for step 1. We send no UART traffic
+ *     yet; this file's firmware fully owns PA9 (drives it low pre-boot,
+ *     switches it to AF7 at boot). Letting CubeMX claim PA9 as USART1_TX
+ *     would fight that. Step 2 (first real traffic) decides how USART1 comes
+ *     up. NB: the GC docs allow "tristate (high-Z) OR logic low" pre-boot,
+ *     and PA9's reset state is already high-Z, so driving it low is the
+ *     belt-and-suspenders choice rather than a strict requirement.
+ *   - You do NOT need to add PC0/PC1/PC2/PC3 or PA9 in CubeMX — the
+ *     modem_pins_init() below configures them in USER CODE, surviving
+ *     CubeMX regeneration.
+ *   - SIMULATE_IBTD is #defined at the top of this file, so it is already
+ *     ON — nothing to set in CubeMX or the IDE. To switch to the real modem,
+ *     comment out that #define (and remove the PC3 -> PC2 jumper).
  */
 
 #include "main.h"
