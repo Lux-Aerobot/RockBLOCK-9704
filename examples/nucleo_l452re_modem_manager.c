@@ -41,24 +41,29 @@
  *
  *   9704 pin / label                 dir(rel. 9704)   Nucleo
  *   3  I_EN   Iridium Enable          IN  <- host      PC1  (output PP)
- *   6  P_EN   Cap-charge enable (ACT.LOW) IN <- host   PC0  (output PP)
+ *   6  P_EN   Cap-charge enable (ACT.LOW) IN <- host   tie to GND -- NOT a
+ *                                                       firmware signal (don't
+ *                                                       confuse with PWR_EN)
  *   7  I_BTD  Booted signal           OUT -> host      PC2  (input, pull-down)
  *   13 TXD    9704 UART TX            OUT -> host      PA10 (USART1_RX, step 2+)
  *   14 RXD    9704 UART RX            IN  <- host      PA9  (USART1_TX / GPIO-low)
  *   1/4/10/16 GND                                       GND
- *   15 V_IN+  DC power 4.0-5.3V                         (host 5V; see notes)
+ *   15 V_IN+  DC power 4.0-5.3V       IN               from our PWR_EN gate
  *
+ *   Our power gate: PWR_EN  PC0 -> load-switch EN that applies/removes V_IN+
+ *                   to the modem. This is the firmware "power" control.
  *   SIMULATE only:  I_BTD_SIM  PC3 (output PP) --- jumper to --- I_BTD PC2
  *
  *   On-board: B1 user button PC13, LD2 LED PA5, USART2 (PA2/PA3) -> ST-LINK VCP.
  *
- * P_EN polarity: 9704 pin 6 is ACTIVE LOW with a weak (~1 MΩ) pulldown, so
- * "leave open / drive low" enables the charge circuit (power on) and "drive
- * high" disables it (power off). We drive PUSH-PULL: LOW = power on,
- * HIGH = power off. This assumes V_IN+ is continuously present and P_EN gates
- * the supercap charger (matches the upstream Pi-hat reference). >>> EE TO
- * CONFIRM against the actual board power topology — if "off" means fully
- * removing V_IN+, P_EN should instead idle high-Z to avoid back-powering. <<<
+ * Modem power: our PWR_EN signal (PC0) drives a load-switch gate that applies
+ * or removes the modem's main power (V_IN+) entirely. It is NOT the 9704's
+ * pin 6. (9704 pin 6 P_EN is the modem's *internal* cap-charge enable — tie it
+ * to GND so the charger runs whenever the modem is powered; no firmware role.)
+ * Gate polarity depends on the chosen load switch — set PWR_GATE_ACTIVE_HIGH
+ * to match. Because we apply power only after the modem's input pins are
+ * safe-low, and remove power only after they are returned low, there is no
+ * back-power path through the modem's logic inputs.
  *
  * I_EN drive: the docs allow direct MCU drive or open-drain. We use push-pull
  * (HIGH = enable). Because we always drive I_EN LOW before removing power, no
@@ -87,7 +92,7 @@
 /* ====== build-time config ================================================ */
 #define SIMULATE_IBTD                 /* comment out when the real 9704 is wired */
 
-#define PEN_SETTLE_MS            100U  /* wait after applying power before I_EN high */
+#define PWR_SETTLE_MS            100U  /* wait after applying power before I_EN high */
 #define IBTD_BOOT_TIMEOUT_MS   30000U  /* generous; tighten once real boot time known */
 #define IBTD_SHUTDOWN_TIMEOUT_MS 30000U
 #define BTN_DEBOUNCE_MS           30U
@@ -97,9 +102,13 @@
 #define IBTD_SIM_SHUTDOWN_DELAY_MS 1000U  /* modelled modem shutdown time */
 #endif
 
+/* PWR_GATE_ACTIVE_HIGH: 1 if the load-switch enable is active-high (drive HIGH
+ * to apply modem power), 0 if active-low. Set to match the chosen switch. */
+#define PWR_GATE_ACTIVE_HIGH      1
+
 /* ====== pin map (Nucleo-L452RE; reassign freely) ========================= */
-#define PEN_PORT       GPIOC
-#define PEN_PIN        GPIO_PIN_0      /* 9704 pin 6  P_EN  (active low) */
+#define PWR_PORT       GPIOC
+#define PWR_PIN        GPIO_PIN_0      /* PWR_EN -> load-switch (applies/removes V_IN+) */
 #define IEN_PORT       GPIOC
 #define IEN_PIN        GPIO_PIN_1      /* 9704 pin 3  I_EN */
 #define IBTD_PORT      GPIOC
@@ -114,12 +123,18 @@
 #define LED_PIN        GPIO_PIN_5      /* LD2 */
 
 /* ====== level helpers ==================================================== */
-#define PEN_ON()    HAL_GPIO_WritePin(PEN_PORT, PEN_PIN, GPIO_PIN_RESET)  /* low  = power on  */
-#define PEN_OFF()   HAL_GPIO_WritePin(PEN_PORT, PEN_PIN, GPIO_PIN_SET)    /* high = power off */
+#if PWR_GATE_ACTIVE_HIGH
+#define PWR_ON()    HAL_GPIO_WritePin(PWR_PORT, PWR_PIN, GPIO_PIN_SET)    /* gate on  = power on  */
+#define PWR_OFF()   HAL_GPIO_WritePin(PWR_PORT, PWR_PIN, GPIO_PIN_RESET)  /* gate off = power off */
+#define PWR_IS_ON() (HAL_GPIO_ReadPin(PWR_PORT, PWR_PIN) == GPIO_PIN_SET)
+#else
+#define PWR_ON()    HAL_GPIO_WritePin(PWR_PORT, PWR_PIN, GPIO_PIN_RESET)
+#define PWR_OFF()   HAL_GPIO_WritePin(PWR_PORT, PWR_PIN, GPIO_PIN_SET)
+#define PWR_IS_ON() (HAL_GPIO_ReadPin(PWR_PORT, PWR_PIN) == GPIO_PIN_RESET)
+#endif
 #define IEN_HIGH()  HAL_GPIO_WritePin(IEN_PORT, IEN_PIN, GPIO_PIN_SET)
 #define IEN_LOW()   HAL_GPIO_WritePin(IEN_PORT, IEN_PIN, GPIO_PIN_RESET)
 #define IEN_IS_HIGH() (HAL_GPIO_ReadPin(IEN_PORT, IEN_PIN) == GPIO_PIN_SET)
-#define PEN_IS_ON()   (HAL_GPIO_ReadPin(PEN_PORT, PEN_PIN) == GPIO_PIN_RESET)
 #define IBTD_HIGH() (HAL_GPIO_ReadPin(IBTD_PORT, IBTD_PIN) == GPIO_PIN_SET)
 #define LED_ON()    HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_SET)
 #define LED_OFF()   HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_RESET)
@@ -204,15 +219,15 @@ static void modem_pins_init(void)
     __HAL_RCC_GPIOC_CLK_ENABLE();
 
     /* Safe levels BEFORE configuring as outputs, to avoid glitches. */
-    PEN_OFF();   /* P_EN high = power off */
+    PWR_OFF();   /* power gate off = modem unpowered */
     IEN_LOW();   /* I_EN low  = disabled  */
 
-    /* P_EN, I_EN: push-pull outputs */
-    g.Pin   = PEN_PIN;
+    /* PWR_EN, I_EN: push-pull outputs */
+    g.Pin   = PWR_PIN;
     g.Mode  = GPIO_MODE_OUTPUT_PP;
     g.Pull  = GPIO_NOPULL;
     g.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(PEN_PORT, &g);
+    HAL_GPIO_Init(PWR_PORT, &g);
     g.Pin = IEN_PIN;
     HAL_GPIO_Init(IEN_PORT, &g);
 
@@ -276,7 +291,7 @@ static void sim_ibtd_update(void)
     static uint32_t boot_since = 0;
     static uint32_t down_since = 0;
     uint32_t now = HAL_GetTick();
-    bool want_boot = PEN_IS_ON() && IEN_IS_HIGH();
+    bool want_boot = PWR_IS_ON() && IEN_IS_HIGH();
 
     if (want_boot) {
         down_since = 0;
@@ -308,7 +323,7 @@ static void enter_fault(const char *why)
     /* Safe escape: remove power. The 9704 shuts down on power loss regardless
      * of I_EN/I_BTD, so this is valid even when the interlock is otherwise
      * blocking an I_EN change (e.g. boot timed out with I_BTD stuck low). */
-    PEN_OFF();
+    PWR_OFF();
     uart1_tx_force_low();
     enter_state(ST_FAULT);
 }
@@ -320,18 +335,18 @@ static void sm_step(bool pressed)
     switch (g_state) {
 
     case ST_IDLE:
-        /* Startup step 1 already satisfied here: P_EN off, I_EN low, TX low. */
+        /* Startup step 1 already satisfied here: power off, I_EN low, TX low. */
         if (pressed) {
             LOG("button: startup\r\n");
-            PEN_ON();                       /* step 2: apply power */
-            LOG("P_EN low (power applied)\r\n");
+            PWR_ON();                       /* step 2: apply power (gate on) */
+            LOG("power gate ON (power applied)\r\n");
             enter_state(ST_STARTUP);
         }
         break;
 
     case ST_STARTUP:
         if (!g_ien_committed) {
-            if ((now - g_phase_ms) >= PEN_SETTLE_MS) {
+            if ((now - g_phase_ms) >= PWR_SETTLE_MS) {
                 /* Interlock: only drive I_EN high from a known-low I_BTD. */
                 if (IBTD_HIGH()) {
                     enter_fault("I_BTD already HIGH before boot requested");
@@ -370,8 +385,8 @@ static void sm_step(bool pressed)
         if (!IBTD_HIGH()) {                 /* step 3: confirmed shut down */
             LOG("I_BTD LOW after %lu ms\r\n", (unsigned long)(now - g_phase_ms));
             /* step 4 (inputs already safe-low) + step 5: remove power */
-            PEN_OFF();
-            LOG("P_EN high (power removed)\r\n");
+            PWR_OFF();
+            LOG("power gate OFF (power removed)\r\n");
             enter_state(ST_IDLE);
         } else if ((now - g_phase_ms) >= IBTD_SHUTDOWN_TIMEOUT_MS) {
             enter_fault("I_BTD never went LOW");
@@ -418,7 +433,7 @@ int main(void)
     /* USART1 intentionally NOT initialised in step 1. */
 
     /* USER CODE BEGIN 2 */
-    modem_pins_init();         /* safe levels: P_EN off, I_EN low, TX low */
+    modem_pins_init();         /* safe levels: power off, I_EN low, TX low */
     enter_state(ST_IDLE);
 
     consolePrintf("\r\n=== RB9704 modem-manager — step 1: power sequencing ===\r\n");
