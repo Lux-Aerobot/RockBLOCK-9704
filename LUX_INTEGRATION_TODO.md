@@ -30,9 +30,30 @@ STM32L452VCT6. Bare-metal, HAL drivers, super-loop.
       N-transmit-per-byte loop)
 - [x] `RB9704_TX_TIMEOUT_MS` 1000 → 200 ms
 
+## Modem-manager firmware POC (5-step plan, started 2026-05-28)
+
+Phased build of the dedicated modem-MCU firmware. Each step has a clean
+validation gate. Laptop via ST-LINK VCP stands in for the Core/L4 in
+steps 2+. See `LUX_DEVLOG.md` 2026-05-28 for the plan and rationale.
+
+- [~] **Step 1 — button-triggered GPIO startup/shutdown + interlock.**
+      Written: `examples/nucleo_l452re_modem_manager.c`. State machine +
+      damage interlock + `SIMULATE_IBTD` (jumper PC3→PC2) + TX-force-low
+      helpers. UART configured, not yet talking. **Awaiting bench
+      bring-up** to validate timing and interlock on hardware.
+- [ ] **Step 2** — 9704 comms + inter-MCU UART link + signal-event
+      messaging (outgoing only).
+- [ ] **Step 3** — MO pipeline (raw passthrough, no translation).
+- [ ] **Step 4** — MT pipeline (1:1 text passthrough).
+- [ ] **Step 5** — wrap in ACTU-style text protocol. = POC complete.
+
 ## Bring-up — outstanding
 
 - [ ] **GPIO startup/shutdown sequence for STM32 (16-pin connector).**
+      First cut implemented in the step-1 POC file above (GPIO-interlock
+      path). Still "conditional" in the sense that the USB-host-bridge
+      option (if the EE finds a viable part) would remove the need for
+      it entirely.
       See https://docs.groundcontrol.com/iot/rockblock-9704/hardware#1-using-16-pin-connector
 
       The Nucleo dev-kit's USB-C path handles sequencing in hardware,
@@ -469,6 +490,16 @@ Sketch in `LUX_DEVLOG.md` 2026-05-27. To turn into a spec:
       - `CMD,SEQ,RB,GET_STATUS` / status reply
       Error code set TBD; at minimum `QUEUE_FULL`, `NOT_PROVISIONED`,
       `INVALID_TOPIC`, `INVALID_ARGS`, `MODEM_FAULT`.
+- [ ] **Modem power-control commands (future, noted 2026-05-28).**
+      The Core should be able to instruct the manager to power the
+      modem on/off and to recover from a FAULT (i.e. trigger the
+      shutdown→startup interlock cycle remotely). Candidate commands:
+      `CMD,SEQ,RB,MODEM_ON` / `MODEM_OFF` / `RESET`. Not needed for the
+      POC (the dev-board user button triggers the sequence), but the
+      GPIO state machine should be built with a Core-triggerable
+      recovery path out of FAULT so this drops in cleanly later.
+      The button and the future RESET command should funnel into the
+      same state-machine entry point.
 - [ ] **Binary-payload encoding choice.** Hex (simple, ~100% overhead)
       vs base64 (denser, ~33% overhead, slightly fiercer parser).
       Recommendation: hex for v0.1 since MO/MT payloads are typically

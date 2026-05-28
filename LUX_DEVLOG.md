@@ -828,3 +828,88 @@ placement.
   Worth a rename on next push, or just retain as the "bring-up
   reference" branch and create a fresh `lux/l0-modem-mgr` once the
   L0 part is selected.
+
+---
+
+## 2026-05-28 — modem-manager POC begun (state as of ~noon)
+
+### Notion sync
+
+Connected the Notion workspace. The "Iridium 9704 bring-up & testing"
+task (Engineering 2026 → Innovation) is the project hub; it links to
+the GitHub `LUX_DEVLOG.md` / `LUX_INTEGRATION_TODO.md` as the canonical
+detailed docs. Wrote the locked architecture decisions into the
+tracker's status block, and resolved two stale questions on the master
+"Iridium SATCOM" page using field-test evidence:
+- "Is 2 kB really the minimum message size?" → struck. Not a minimum;
+  10–61 B payloads delivered fine. The 2 kB is the Arduino-default
+  `IMT_PAYLOAD_SIZE` buffer (max), not a floor.
+- "L452 may have insufficient RAM to manage the 9704" → struck.
+  Superseded by the two-MCU decision (dedicated modem MCU).
+
+Useful context pulled from the master page, now feeding our decisions:
+- **Message sizes (current scope)**: telemetry ~150 B, commands /
+  responses <50 B, thumbnails deferred. So `IMT_PAYLOAD_SIZE` can be
+  tiny — no payload-driven RAM pressure on the L0.
+- **Cost/power**: ~$0.5 per transmission; heartbeat-MO cadence is
+  therefore cost-bound, not just latency-bound (5 min ≈ $150/day/unit,
+  15 min ≈ $50/day/unit). Folded into the heartbeat-MO TODO.
+
+### Implementation plan agreed (5 steps)
+
+Phased build of the modem-manager firmware, each step with a clean
+validation gate (tracked as tasks):
+1. Button-triggered GPIO startup/shutdown sequence + interlock
+   (UART configured, not yet talking). ← **current**
+2. 9704 comms + inter-MCU UART link + signal-event messaging (outgoing
+   only as proof of life). Laptop via ST-LINK VCP stands in for the
+   Core/L4.
+3. MO pipeline — raw passthrough (text in over the Core link → straight
+   to modem, no translation yet).
+4. MT pipeline — 1:1 text passthrough modem → Core link.
+5. Wrap everything in the ACTU-style text protocol (TYPE/SEQ/TARGET/
+   CMD, variable-length payload). That = POC complete.
+
+### Step 1 written (not yet hardware-validated)
+
+`examples/nucleo_l452re_modem_manager.c` on the branch:
+- State machine IDLE → STARTUP → RUNNING → SHUTDOWN → IDLE, plus FAULT.
+- Startup: power gate on → settle → I_EN high → wait I_BTD high → host
+  TX (PA9) switches from forced-low to USART1 AF. Shutdown mirrors it.
+- Damage interlock enforced structurally (button only honoured from a
+  stable state) + explicit pre-boot I_BTD check. FAULT escape removes
+  power (valid even when the interlock would otherwise block an I_EN
+  change), recovers to IDLE on ack. Future Core `RESET` funnels into
+  the same path.
+- `SIMULATE_IBTD` (default on): MCU drives I_BTD_SIM (PC3), jumpered to
+  the real I_BTD input (PC2), modelling the modem's boot/shutdown
+  timing — exercises the real GPIO read path with zero modem risk.
+- TX force-low / AF-switch helpers validate the "host TX low until
+  booted" requirement.
+
+Two corrections caught during/after writing:
+- `LOG` macro had the timestamp arg out of order (would've swapped the
+  tick with the first real arg) — fixed to `##__VA_ARGS__` form.
+- **Power model corrected**: our `PWR_EN` drives a load-switch gate that
+  applies/removes the modem's V_IN+ rail entirely — it is **not** the
+  9704's pin 6 P_EN (internal cap-charge enable, tie to GND). Gate
+  polarity now configurable via `PWR_GATE_ACTIVE_HIGH`. This also
+  dissolved the earlier back-power caveat (with a real gate, "off" =
+  V_IN+ removed, and the existing input-safe-low sequencing covers
+  back-power).
+
+### State as of noon 2026-05-28
+
+- **Architecture**: two-MCU split locked. Dedicated modem MCU
+  (class TBD — L0 baseline, may step up for headroom) + L4 Node Core.
+- **9704 comms**: Send MO / Receive MT / signal monitoring all proven
+  end-to-end via the Python binding + field test. C library port built
+  but not yet run on STM32 hardware.
+- **Modem-manager firmware**: step 1 of 5 written and pushed, awaiting
+  bench bring-up (SIMULATE_IBTD + PC3→PC2 jumper). Steps 2–5 pending,
+  deliberately held until step 1 is hardware-validated.
+- **Open hardware unknowns**: exact modem MCU part; 9704 connection
+  (USB-C-via-host-bridge vs 16-pin GPIO); power-gate polarity.
+- **Docs**: devlog + TODO current; Notion tracker synced.
+- **Branch**: `lux/stm32-l452-port` @ the step-1 + power-gate-fix
+  commits.
