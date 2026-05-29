@@ -1308,3 +1308,58 @@ failures; our unit is post-revision.
 external camera-mounted IMU, magnetometer sourcing, Qwiic/SparkFun
 quick-connects, solar-board consolidation, and milestone-chain schedule
 risk. Out of scope for these docs; parked for Liam to route.)*
+
+### ⭐ First real-modem power-up — CLEAN; boot is I_EN-gated; real timing captured (2026-05-29)
+
+First time the real 9704 ran through our interlock (manual bench-supply
+V_IN+, antenna on, power/enable-only — the modem UART is not yet in the
+loop; the RUNNING "Hello Lux" transmits out PA9 regardless of whether it's
+wired to the modem). **Two full startup/shutdown cycles, both clean, the
+sequence exactly as designed.**
+
+**Boot is I_EN-gated, not power-gated.** With the modem continuously
+powered (manual supply, no enable button), I_BTD stayed LOW until I_EN was
+driven high — the pre-boot check passed, no FAULT. Confirms the firmware's
+core assumption, and is why the missing supply-enable button was a
+non-issue: power can sit on continuously; I_EN is the gate.
+
+**Real timing (both cycles, room temp, n=2):**
+- Boot (I_EN high → I_BTD high): **930 ms**, identical both cycles —
+  deterministic hardware boot.
+- Shutdown (I_EN low → I_BTD low): **16–19 ms** — near-instant.
+- vs the sim's modelled 2000 / 1000 ms: sim boot was conservative; real
+  shutdown is ~60× faster than modelled. The SIMULATE_IBTD comparison
+  (define left ON, jumper OUT — sim drove PC3 into open air while PC2 read
+  the real modem) worked exactly as intended: banner showed 2000/1000 while
+  the live I_BTD read 930/17.
+
+Full sequence confirmed in order: power → [100 ms] → I_EN↑ → [930 ms boot]
+→ [100 ms] → USART1 up → RUNNING → … → USART1 down → [100 ms] → I_EN↓ →
+[17 ms] → [100 ms] → power off → IDLE. All four 100 ms settle margins
+present and correct.
+
+**Retuned to the real figures:**
+- `IBTD_BOOT_TIMEOUT_MS` 30 s → **10 s** (10× over real 930 ms; deliberately
+  generous — n=2 at room temp, and this modem family has cold-temperature
+  history, so leave headroom for a slower cold boot; re-confirm cold before
+  tightening).
+- `IBTD_SHUTDOWN_TIMEOUT_MS` 30 s → **5 s** (~300× over real ~17 ms).
+- Settle margins (100 ms each) left as-is — our choice, not modem-dictated,
+  and the 930 ms boot dominates the cycle anyway.
+
+**`SIMULATE_IBTD` kept ON (Liam's call), jumper OUT.** Left defined to
+retain the modelled reference times (2000/1000 ms) in the banner for
+side-by-side comparison with the live modem; the PC3→PC2 jumper stays
+removed so the push-pull PC3 sim output can't contend with the modem's
+weak I_BTD driver. Caveat: the runtime banner still prints the "jumper
+PC3 -> PC2" hint, which is misleading with a real modem on the line —
+flagged to soften.
+
+**Open for the comms step:** I_BTD-high = *hardware* booted, NOT
+*JSPR-ready*. The 100 ms `UART_UP_DELAY` before we talk is still an
+unvalidated guess — verify/revisit when we first exchange JSPR; the modem
+may need more settle before it answers.
+
+**Task #10 (first real-modem power-up) complete.** Next: real JSPR comms
+over USART1 to the modem — the library's first contact on STM32 hardware —
+then 2.3 (signal-event as the first shaped outbound message + ACTU framing).

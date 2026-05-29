@@ -121,8 +121,9 @@
 #define UART_UP_DELAY_MS         100U  /* I_BTD high    -> before USART1 up */
 #define UART_DOWN_DELAY_MS       100U  /* USART1 down   -> before I_EN low  */
 #define PWR_OFF_DELAY_MS         100U  /* I_BTD low     -> before power off */
-#define IBTD_BOOT_TIMEOUT_MS   30000U  /* generous; tighten once real boot time known */
-#define IBTD_SHUTDOWN_TIMEOUT_MS 30000U
+#define IBTD_BOOT_TIMEOUT_MS   10000U  /* real boot ~930ms (2026-05-29, room temp, n=2);
+                                          10x margin + headroom for slower cold-temp boot */
+#define IBTD_SHUTDOWN_TIMEOUT_MS 5000U  /* real shutdown ~17ms (2026-05-29); large margin */
 #define BTN_DEBOUNCE_MS           30U
 #define TEST_TX_INTERVAL_MS     2000U  /* 2.2: period of the "Hello Lux" test message in RUNNING */
 
