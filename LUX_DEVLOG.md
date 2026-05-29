@@ -1082,3 +1082,90 @@ Validate the real 9704 powers up, asserts I_BTD ("booted"), and shuts
 down cleanly through our interlock — *before* touching serial protocols.
 Moves us off the `SIMULATE_IBTD` harness onto the real module's I_BTD
 timing. (Results to follow in a later entry today.)
+
+### First real-modem power-up — plan & checklist (the "step 2.x → real HW" gate)
+
+First time the real, expensive 9704 sees *our* interlock. Deliberately
+power/enable-only — no UART data lines connected — so any problem reads as
+"didn't boot / didn't shut down," not tangled with protocol bugs. This is
+the gate between the `SIMULATE_IBTD` bench work and live-modem serial work.
+
+**Wiring map (logical → 9704 pin → MCU pin).** Full table on the Notion
+page. Confirmation status matters:
+- ✓ confirmed from RB9704 pin description: GND/V_IN- (pins 1/4/10/16, all
+  to common host ground in non-USB mode); P_EN (pin 6) **left OPEN** (no
+  tie, no pull — supersedes our earlier "tie to GND" assumption).
+- ⚠ from our working firmware map, to be confirmed against the connector
+  pinout before wiring: V_IN+ (15), I_EN (3), I_BTD (7), RXD (14),
+  TXD (13). [Liam cross-checking the pin numbers and dropping the real
+  MCU pin numbers into the map.]
+
+**Logic levels — confirmed compatible, no shifting** (RB9704 Signal
+Thresholds): modem inputs accept 3.3 V drive (logic-in HIGH 2.0–3.6 V,
+LOW ≤0.4 V); modem outputs swing 2.9–3.4 V HIGH / 0–0.4 V LOW, read
+directly by the 3.3 V L452. Modem outputs are **weak (≤2 mA)** — must not
+be contended (drives the PC3 warning below; also why the PC2 pull-down,
+~tens of µA, won't fight a real I_BTD high).
+
+**Power.** DC-power path: V set within 4.0–5.3 V, **bench current limit
+400 mA** (≤500 mA DC-path max). Watch for false CC-trip on cap-charge
+inrush — if the modem won't boot at 400 mA, nudge toward 500 before
+suspecting wiring. (Separate battery path 3.6–4.5 V / ≤1100 mA exists for
+later TX-burst headroom — not needed today, no TX.)
+
+**Antenna ON for all tests** (operator habit; protects the PA from driving
+into an open if the modem ever keys up unexpectedly). Boot/shutdown needs
+no sky view — I_BTD is just "booted," no RF.
+
+**SIMULATE_IBTD with a real modem.** Detection/timing already read the
+I_BTD *input* pin (PC2); the sim only drives PC3. So the define can be
+left ON (keeps the live boot/shutdown reference numbers in the banner) OR
+off. **Either way the PC3→PC2 jumper MUST be removed** — PC3 stays an
+actively-driven push-pull output and would contend with the modem's ≤2 mA
+I_BTD driver. Lean: flip it OFF for real runs so PC3 is never even
+configured as an output (the contention foot-gun disappears entirely).
+
+**Phased test:**
+
+1. **USB boot-time probe (no firmware sequencing).** Power the modem over
+   its USB-C port; scope/meter I_BTD (at PC2 / the I_BTD pin) and record
+   the real boot time to I_BTD-high. Validates the I_BTD→PC2 wiring and
+   gives the real boot figure *before* our sequence is in the loop. Also
+   answers a key question: **is I_BTD asserted on power alone, or only
+   after I_EN?** (USB sequences enable in hardware, so this tells us
+   whether boot is power-gated or enable-gated.)
+2. **Our startup sequence.** Bench supply on V_IN+ via the load switch,
+   button-triggered: PWR_EN on → [PWR_SETTLE] → I_EN high → wait real
+   I_BTD high → [UART_UP_DELAY] → (USART1 up, harmless w/ data lines off)
+   → RUNNING. Record real I_BTD-high latency from the console
+   ("I_BTD HIGH after %lu ms").
+3. **Our shutdown sequence.** Button: → I_EN low → wait real I_BTD low →
+   [PWR_OFF_DELAY] → power off → IDLE. Record real I_BTD-low latency.
+4. **Interlock spot-check.** Confirm button presses mid-STARTUP/SHUTDOWN
+   are ignored (I_EN never moves mid-sequence) — same as the sim runs.
+
+**Success criteria (today's DoD):**
+- Real modem asserts I_BTD high within `IBTD_BOOT_TIMEOUT_MS` (30 s) →
+  reaches RUNNING.
+- Clean shutdown: I_BTD low → power off → IDLE.
+- No spurious FAULT on a clean cycle; interlock holds.
+- Real boot/shutdown times recorded (compare against the sim's modelled
+  2000 / 1000 ms — and **retune `IBTD_*_TIMEOUT_MS` / settle margins** to
+  the real figures afterward).
+- "Ready" today = I_BTD high (hardware booted). JSPR-level ready (modem
+  answering over UART) is the serial step — out of scope.
+
+**Watch-items / known failure modes:**
+- **`FAULT: I_BTD already HIGH before boot requested`** (sm_step pre-boot
+  check). Fires if the real modem asserts I_BTD on power *before* we drive
+  I_EN high (i.e. boot is power-gated and faster than `PWR_SETTLE_MS`).
+  Real boot looks like seconds, so at a 100 ms settle we're likely still
+  low — but if this trips, it's the cause, **not** a wiring fault. The USB
+  probe (step 1) tells us in advance which gating applies. If power-gated
+  & fast, options: lengthen `PWR_SETTLE_MS` past boot, or relax the
+  pre-boot check for the real-modem case.
+- **CC-trip on inrush** (see Power) — bump limit toward 500 mA.
+- **PC3 contention** if the sim jumper is left in with a real modem — see
+  above; remove the jumper.
+- Trust the console/MCU timestamps over any single LED/probe (standing
+  lesson — several past "bugs" were probe-on-wrong-pin).
