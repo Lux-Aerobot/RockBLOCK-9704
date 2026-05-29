@@ -3,12 +3,13 @@
  * Target: Nucleo-L452RE (dev stand-in for the eventual dedicated modem MCU)
  *
  * STEPS:
- *   1 (done, hardware-validated): button-triggered GPIO startup/shutdown
- *     sequencing + damage interlock + FAULT recovery, with SIMULATE_IBTD.
- *   2.1 (this change): bring USART1 UP (HAL init) at boot and DOWN (deinit)
- *     at shutdown, at the correct points in the sequence. PA9 now transitions
- *     GPIO-low (pre-boot) -> real UART idle-high (RUNNING) -> GPIO-low
- *     (shutdown). Still no UART traffic — that is 2.2+.
+ *   1 (done): button-triggered GPIO startup/shutdown sequencing + damage
+ *     interlock + FAULT recovery, with SIMULATE_IBTD.
+ *   2.1 (done): bring USART1 UP at boot and DOWN at shutdown, with symmetric
+ *     100 ms settle margins. PA9 idles at real UART-high in RUNNING.
+ *   2.2 (this change): loop a fixed "Hello Lux" test message out USART1 while
+ *     RUNNING (every TEST_TX_INTERVAL_MS). No protocol yet — just proving the
+ *     link moves bytes. Verify on a scope, or loopback PA9 -> PA10.
  *
  * No modem is required to bench this: with SIMULATE_IBTD defined, the MCU
  * drives a spare GPIO (I_BTD_SIM) that you JUMPER to the I_BTD input, so the
@@ -114,6 +115,7 @@
 #define IBTD_BOOT_TIMEOUT_MS   30000U  /* generous; tighten once real boot time known */
 #define IBTD_SHUTDOWN_TIMEOUT_MS 30000U
 #define BTN_DEBOUNCE_MS           30U
+#define TEST_TX_INTERVAL_MS     2000U  /* 2.2: period of the "Hello Lux" test message in RUNNING */
 
 #ifdef SIMULATE_IBTD
 #define IBTD_SIM_BOOT_DELAY_MS     2000U  /* modelled modem boot time */
@@ -175,6 +177,7 @@ typedef enum {
 
 static mstate_t  g_state = ST_IDLE;
 static uint32_t  g_phase_ms = 0;       /* timestamp of the last intra-state action */
+static uint32_t  g_tx_ms = 0;          /* last test-message transmit time (RUNNING) */
 static bool      g_ien_committed = false; /* has the I_EN transition for this state been done? */
 static bool      g_last_ien_high = false; /* interlock guard: last commanded I_EN level */
 static bool      g_ibtd_high_seen = false;/* startup: I_BTD high confirmed, in UART-up settle */
@@ -408,6 +411,16 @@ static void sm_step(bool pressed)
         break;
 
     case ST_RUNNING:
+        /* 2.2: prove USART1 moves bytes — loop a fixed test message out the
+         * modem link while RUNNING. No protocol yet; just the raw string on a
+         * timer. (Transmits immediately on entering RUNNING, then every
+         * TEST_TX_INTERVAL_MS, since g_tx_ms is stale by then.) */
+        if ((now - g_tx_ms) >= TEST_TX_INTERVAL_MS) {
+            static const char msg[] = "Hello Lux\r\n";
+            HAL_UART_Transmit(&huart1, (uint8_t *)msg, sizeof(msg) - 1U, 100);
+            g_tx_ms = now;
+            LOG("USART1 TX: \"Hello Lux\"\r\n");
+        }
         if (pressed) {
             LOG("button: shutdown\r\n");
             uart1_down();                   /* step 1: cease comms (USART1 deinit + TX low) */
