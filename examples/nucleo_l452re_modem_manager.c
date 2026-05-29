@@ -15,7 +15,10 @@
  * drives a spare GPIO (I_BTD_SIM) that you JUMPER to the I_BTD input, so the
  * interlock exercises the *real* GPIO read path and real electrical edges —
  * the MCU just plays the modem's I_BTD response with configurable delays.
- * Flip SIMULATE_IBTD off (and remove the jumper) once the real 9704 is wired.
+ * Once the real 9704 is wired, REMOVE the PC3->PC2 jumper. You may flip
+ * SIMULATE_IBTD off, OR keep it on to retain the modelled boot/shutdown
+ * reference times — but either way the jumper MUST stay out: PC3 is still an
+ * actively-driven output and would contend with the modem's I_BTD driver.
  *
  * ---------------------------------------------------------------------------
  * RB9704 startup sequence (16-pin connector), per Ground Control docs:
@@ -39,13 +42,16 @@
  *
  * ---------------------------------------------------------------------------
  * Wiring (9704 16-pin  ->  Nucleo-L452RE). Nucleo pins are easily reassigned
- * in CubeMX; the function mapping is what matters.
+ * in CubeMX; the function mapping is what matters. NB: the 9704 pin numbers
+ * below are our working map — confirm each against the connector pinout before
+ * wiring. Only GND (1/4/10/16) and P_EN (pin 6) are confirmed from the pin desc.
  *
  *   9704 pin / label                 dir(rel. 9704)   Nucleo
  *   3  I_EN   Iridium Enable          IN  <- host      PC1  (output PP)
- *   6  P_EN   Cap-charge enable (ACT.LOW) IN <- host   tie to GND -- NOT a
- *                                                       firmware signal (don't
- *                                                       confuse with PWR_EN)
+ *   6  P_EN   Cap-charge enable          IN <- host    LEAVE OPEN (per pin
+ *                                                       desc) -- NOT a firmware
+ *                                                       signal (don't confuse
+ *                                                       with PWR_EN)
  *   7  I_BTD  Booted signal           OUT -> host      PC2  (input, pull-down)
  *   13 TXD    9704 UART TX            OUT -> host      PA10 (USART1_RX, step 2+)
  *   14 RXD    9704 UART RX            IN  <- host      PA9  (USART1_TX / GPIO-low)
@@ -60,8 +66,9 @@
  *
  * Modem power: our PWR_EN signal (PC0) drives a load-switch gate that applies
  * or removes the modem's main power (V_IN+) entirely. It is NOT the 9704's
- * pin 6. (9704 pin 6 P_EN is the modem's *internal* cap-charge enable — tie it
- * to GND so the charger runs whenever the modem is powered; no firmware role.)
+ * pin 6. (9704 pin 6 P_EN is the modem's *internal* cap-charge enable — the
+ * RB9704 pin description says LEAVE IT OPEN: no tie, no pull, no firmware role.
+ * Earlier notes said "tie to GND"; the datasheet pin description supersedes.)
  * Gate polarity depends on the chosen load switch — set PWR_GATE_ACTIVE_HIGH
  * to match. Because we apply power only after the modem's input pins are
  * safe-low, and remove power only after they are returned low, there is no
@@ -89,8 +96,10 @@
  *   - You do NOT need to add PC0/PC1/PC2/PC3 in CubeMX — modem_pins_init()
  *     configures them in USER CODE. PA9 is owned by USART1 in CubeMX now, but
  *     modem_pins_init() re-points it to GPIO-low until uart1_up() runs.
- *   - SIMULATE_IBTD is #defined at the top of this file (already ON). To
- *     switch to the real modem, comment it out (and remove the I_BTD jumper).
+ *   - SIMULATE_IBTD is #defined at the top of this file (already ON). For a
+ *     real modem, REMOVE the PC3->PC2 jumper; you may keep the define on (to
+ *     retain the modelled reference times) or comment it out. The jumper stays
+ *     out either way -- PC3 stays driven and would fight the modem's I_BTD.
  */
 
 #include "main.h"
@@ -100,7 +109,7 @@
 #include <string.h>
 
 /* ====== build-time config ================================================ */
-#define SIMULATE_IBTD                 /* comment out when the real 9704 is wired */
+#define SIMULATE_IBTD                 /* real 9704: REMOVE PC3->PC2 jumper (may keep define for ref times) */
 
 /* Sequence settle margins — symmetric up/down:
  *   startup:  PWR_ON -[PWR_SETTLE_MS]- I_EN high -wait I_BTD high-
@@ -510,8 +519,9 @@ int main(void)
 
     consolePrintf("\r\n=== RB9704 modem-manager — step 1: power sequencing ===\r\n");
 #ifdef SIMULATE_IBTD
-    consolePrintf("SIMULATE_IBTD: ON  (jumper PC3 -> PC2 so the sim feeds I_BTD)\r\n");
-    consolePrintf("  modelled boot=%lums shutdown=%lums\r\n",
+    consolePrintf("SIMULATE_IBTD: ON  (sim drives PC3)\r\n");
+    consolePrintf("  sim-only bench: jumper PC3 -> PC2.  Real 9704 on PC2: leave PC3 UNJUMPERED.\r\n");
+    consolePrintf("  modelled boot=%lums shutdown=%lums (reference)\r\n",
                   (unsigned long)IBTD_SIM_BOOT_DELAY_MS,
                   (unsigned long)IBTD_SIM_SHUTDOWN_DELAY_MS);
 #else
