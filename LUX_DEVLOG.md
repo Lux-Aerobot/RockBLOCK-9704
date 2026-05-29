@@ -913,3 +913,39 @@ Two corrections caught during/after writing:
 - **Docs**: devlog + TODO current; Notion tracker synced.
 - **Branch**: `lux/stm32-l452-port` @ the step-1 + power-gate-fix
   commits.
+
+### Step 1 hardware-validated (2026-05-28, afternoon)
+
+Flashed to the Nucleo-L452RE and ran on the bench (SIMULATE_IBTD on,
+PC2/PC3 + control pins jumpered to a common probe node). All four
+checks pass — **step 1 complete, firmware unchanged** (validated build
+is `fb28652`, no code edits needed from bring-up):
+
+1. **Normal cycle** — startup/shutdown timestamps match the sim delays
+   (~2000 / ~1000 ms). Sequencing + I_BTD read path confirmed.
+2. **Interlock holds** — button presses during STARTUP/SHUTDOWN are
+   ignored; I_EN never changes mid-sequence.
+3. **FAULT path** — I_BTD never going high drives the 30 s timeout →
+   FAULT, power gate forced off, frantic LED, recover-on-ack.
+4. **TX-low / I_BTD timing** — confirmed once probed correctly.
+
+Two bench-side gotchas worth recording (firmware was correct
+throughout — both were instrumentation/pinout mistakes):
+- **`-P` vs `RE` pinout**: an early FAULT came from jumpering the
+  Arduino A2/A3 silk (PA4/PB0 on the L452RE), not PC2/PC3 — traced to
+  using the `NUCLEO_L4xxRx-P` diagram instead of the clean L452RE one.
+  Briefly relocated the firmware to the A-header to compensate, then
+  reverted once the real cause (wrong diagram) was found; PC0–PC3
+  assignments stand.
+- **Probe on the wrong pin**: the "I_BTD goes high before I_EN"
+  anomaly was the I_BTD LED probed on PC0 (= P_EN), so it was
+  displaying P_EN the whole time. The MCU's own I_BTD read (console,
+  2007 ms) was correct all along. Re-probing the PC2↔PC3 node showed
+  the expected timing.
+
+Lesson reinforced: when an LED/probe disagrees with the console
+timestamp, trust the console (MCU truth) and suspect the probe.
+
+Step 2 (USART1 brought up for real, inter-MCU link to the
+laptop-as-Core, signal-change events as the first message) is now
+unblocked.
