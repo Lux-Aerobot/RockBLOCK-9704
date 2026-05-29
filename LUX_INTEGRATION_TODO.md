@@ -94,6 +94,20 @@ steps 2+. See `LUX_DEVLOG.md` 2026-05-28 for the plan and rationale.
       last commanded `I_EN`, refuse early state changes.
 
       **Implementation tasks:**
+      - [ ] **Production power switch = high-side load-switch IC**
+            (TPS22918 / AP22xxx class) on V_IN+, enabled from PWR_EN.
+            Decided 2026-05-29 after working through the topology: the
+            9704's GND/V_IN- pins (1/4/10/16) are *combined signal-ground
+            + power-return*, so the switch MUST be high-side (low-side
+            would switch the shared signal-ground reference → back-power).
+            A high-side N-FET (e.g. IRLZ44N) needs gate-above-rail drive,
+            so it's the wrong device; load-switch IC gives high-side gate
+            drive + controlled inrush slew + (often) a fault flag from a
+            single 3.3 V active-high enable (`PWR_GATE_ACTIVE_HIGH=1`
+            still fits). Discrete P-FET + NPN level-shift is the fallback.
+            See LUX_DEVLOG 2026-05-29. **Bench bring-up uses manual
+            bench-supply V_IN+ control** until the IC is sourced — the
+            firmware sequencing is power-source-agnostic.
       - [ ] Pick four L452 GPIOs: `P_EN`, `I_EN`, `I_BTD`, plus
             optionally a "modem ready" status LED. TBD on production
             board layout; on Nucleo, anything spare on the Arduino

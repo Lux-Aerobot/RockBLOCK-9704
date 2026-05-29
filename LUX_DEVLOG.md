@@ -1169,3 +1169,64 @@ configured as an output (the contention foot-gun disappears entirely).
   above; remove the jumper.
 - Trust the console/MCU timestamps over any single LED/probe (standing
   lesson — several past "bugs" were probe-on-wrong-pin).
+
+### Power-gate topology: IRLZ44N dead-end → load-switch IC; manual V_IN+ for the bench
+
+Going to wire the PWR_EN load-switch gate with an **IRLZ44N** (on hand).
+Worked through the topology before energizing — it's the wrong device for
+this job, and the reasoning is worth recording.
+
+**The 9704's ground pins (1/4/10/16) are combined signal-ground *and*
+V_IN-.** That single fact decides the switch topology:
+
+- **Low-side** (the natural use of an N-channel FET — switch in the ground
+  return): here it would switch the modem's GND/V_IN- — i.e. the
+  *signal-ground reference* the MCU shares with the modem for I_EN, I_BTD,
+  and UART. In "off," the modem's V_IN+ is still tied to the supply and its
+  ground floats up; our I_EN/TX, driven to 0 V system-ground, then sit
+  *below* the modem's floating ground and forward-bias the pin-to-ground
+  ESD diodes → current injection / back-power, recurring every power-off.
+  **Rejected** — you can't switch a ground that's also the signal
+  reference.
+- **High-side** (switch V_IN+, leave GND/V_IN- permanently common — the
+  correct topology for this module): but a high-side **N**-FET needs its
+  gate driven *above the rail*. V_GS = V_gate − V_source; when it conducts
+  the source follows up to ≈V_rail (4–5 V), so a 3.3 V (even a 5 V) gate
+  gives V_GS ≤ 0 → device off. Needs a charge pump / bootstrap. Not worth
+  it.
+
+**The logic-level threshold does NOT rescue high-side** — the trap I
+nearly fell into. IRLZ44N V_GS(th) ≈ 2 V *looks* like "3.3 V turns it on,"
+but that spec is measured at **V_DS = V_GS** (onset of conduction, 250 µA)
+— it's the threshold, not "fully enhanced," and more importantly it says
+nothing about the high-side geometry where the source rises to the rail.
+Logic-level only helps **low-side** (source at ground, V_GS = full gate
+swing). *Lesson: "logic-level" ≠ "high-side-capable." An N-FET is a
+low-side switch; high-side wants a P-FET (+ NPN level-shift from the GPIO)
+or a load-switch IC. The `V_DS = V_GS` condition on the threshold spec is
+the tell.*
+
+**Decisions:**
+- **Production power switch = load-switch IC** (TPS22918 / AP22xxx class):
+  built-in high-side gate drive, controlled slew to tame the cap-charge
+  inrush, often a fault flag, single 3.3 V enable from PWR_EN/PC0. Enable
+  is active-high, so `PWR_GATE_ACTIVE_HIGH=1` still fits. (Discrete P-FET +
+  NPN is the parts-bin fallback.)
+- **Bench test today = no switch at all.** Control V_IN+ manually via the
+  bench-supply output-enable; PWR_EN/PC0 drives nothing this run.
+
+**Why manual power is safe (Liam's catch):** the GC sequence brackets the
+whole run — *apply power is the FIRST startup step, remove power is the
+LAST shutdown step.* So as long as we (1) power the Nucleo first, letting
+`modem_pins_init` drive I_EN/TX safe-low *before* any modem power, then
+enable V_IN+, and (2) cut V_IN+ only after the shutdown sequence has driven
+I_EN low, the ordering the modem cares about is satisfied. The
+power↔I_EN/I_BTD timing isn't tight on the modem's side — all of our settle
+margins live *after* power-on — so a manual supply toggle is fine. The
+worry about "manual timing" was unfounded once the sequence ordering is
+remembered.
+
+This also absorbs the dropped USB boot-probe: the boot-gating question
+(power-gated vs I_EN-gated) falls straight out of the manual run — button
+proceeds to RUNNING ⇒ I_EN-gated; `FAULT: I_BTD already HIGH before boot
+requested` ⇒ power-gated. No scope, no second power source.
