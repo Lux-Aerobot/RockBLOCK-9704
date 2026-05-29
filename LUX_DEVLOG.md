@@ -1044,3 +1044,41 @@ call time, so late init is baud-innocent).
 
 **Step 2.2 complete.** Next: 2.3 — the signal-change event as the first
 *shaped* outbound message + the inter-MCU (ACTU-style) framing.
+
+---
+
+## 2026-05-29 — Day 4: 16-pin connection locked; prepping first real-modem power-up
+
+### Decision: 16-pin connector + GPIO interlock (USB-host bridge rejected)
+
+The long-open "USB-C via a USB-host bridge vs the 16-pin connector"
+question is **resolved in favour of the 16-pin connector** with the
+software GPIO startup/shutdown interlock, driven by the dedicated
+manager MCU. The USB-host-bridge approach is dropped. Consequences:
+
+- The GPIO interlock state machine is now **unconditionally** the
+  production path — it was previously hedged as "conditional on the EE's
+  USB-host findings." The step-1 POC sequencing *is* the real path, not a
+  fallback. Good news: that code is already written and bench-validated
+  (against `SIMULATE_IBTD`).
+- No USB-host bridge part to source; no USB-host stack on the manager MCU.
+- USB-host capability drops off the L0 part-selection criteria — widens
+  the candidate list.
+
+### Wiring note caught before first power-up: GND / V_IN- pins
+
+From the GroundControl pin descriptions: **pins 1, 4, 10, 16 are GND /
+V_IN-** — signal grounds that must *all* be connected to the host circuit
+*unless* the module is used in USB-only mode. We've just rejected
+USB-only, so **all four must be tied to host ground.** These are also the
+power-return path (V_IN-), so for the production PCB they want
+low-impedance ground (the modem's TX current bursts return through here).
+Easy to under-connect on a first bench hookup if you assume one ground
+pin is enough.
+
+### Plan for today: power-only bring-up before any serial
+
+Validate the real 9704 powers up, asserts I_BTD ("booted"), and shuts
+down cleanly through our interlock — *before* touching serial protocols.
+Moves us off the `SIMULATE_IBTD` harness onto the real module's I_BTD
+timing. (Results to follow in a later entry today.)

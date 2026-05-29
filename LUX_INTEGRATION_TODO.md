@@ -58,9 +58,9 @@ steps 2+. See `LUX_DEVLOG.md` 2026-05-28 for the plan and rationale.
 
 - [ ] **GPIO startup/shutdown sequence for STM32 (16-pin connector).**
       First cut implemented in the step-1 POC file above (GPIO-interlock
-      path). Still "conditional" in the sense that the USB-host-bridge
-      option (if the EE finds a viable part) would remove the need for
-      it entirely.
+      path). **Locked as the production path (2026-05-29):** 16-pin
+      connector + GPIO interlock, USB-host-bridge alternative rejected.
+      No longer conditional.
       See https://docs.groundcontrol.com/iot/rockblock-9704/hardware#1-using-16-pin-connector
 
       The Nucleo dev-kit's USB-C path handles sequencing in hardware,
@@ -411,12 +411,20 @@ Sub-questions:
   or NXP equivalent? (Probably yes — staying in STM32 land is
   cheap.)
 
-### 9704 connection: USB-C vs 16-pin
+### 9704 connection: USB-C vs 16-pin — RESOLVED (2026-05-29)
 
-EE is investigating USB-host-capable USB-UART converter chips. If a
-viable part exists, 9704 connects via its USB-C port, modem-side
-hardware handles startup/shutdown sequencing, and the GPIO interlock
-state machine goes away entirely.
+**Decision: 16-pin connector + GPIO interlock. USB-host bridge rejected.**
+The dedicated manager MCU drives the 9704's power/enable pins directly and
+enforces the I_EN/I_BTD damage interlock in firmware. No USB-host bridge
+part to source, no USB-host stack on the manager MCU, and USB-host
+capability drops off the L0 part-selection criteria.
+
+Original investigation kept below for the record.
+
+EE was investigating USB-host-capable USB-UART converter chips. If a
+viable part existed, 9704 would connect via its USB-C port, modem-side
+hardware would handle startup/shutdown sequencing, and the GPIO interlock
+state machine would go away entirely. Not pursued.
 
 Sub-questions / TBD:
 
@@ -430,9 +438,9 @@ Sub-questions / TBD:
 - Licensing/regulatory: any restrictions on the USB host approach
   for satellite-comms hardware?
 
-Until resolved, treat the GPIO state machine TODO as
-**conditionally needed** — it's the fallback if no USB-host part
-works out.
+**Resolved (2026-05-29): 16-pin + GPIO interlock chosen, USB-host
+rejected.** The GPIO state machine is the production path, no longer a
+conditional fallback. Sub-questions above retained for the record.
 
 ---
 
