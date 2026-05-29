@@ -102,6 +102,7 @@
 #define SIMULATE_IBTD                 /* comment out when the real 9704 is wired */
 
 #define PWR_SETTLE_MS            100U  /* wait after applying power before I_EN high */
+#define PWR_OFF_DELAY_MS         100U  /* wait after I_BTD low before removing power */
 #define IBTD_BOOT_TIMEOUT_MS   30000U  /* generous; tighten once real boot time known */
 #define IBTD_SHUTDOWN_TIMEOUT_MS 30000U
 #define BTN_DEBOUNCE_MS           30U
@@ -168,6 +169,7 @@ static mstate_t  g_state = ST_IDLE;
 static uint32_t  g_phase_ms = 0;       /* timestamp of the last intra-state action */
 static bool      g_ien_committed = false; /* has I_EN been driven this sequence? */
 static bool      g_last_ien_high = false; /* interlock guard: last commanded I_EN level */
+static bool      g_ibtd_low_seen = false; /* shutdown: I_BTD low confirmed, in power-off settle */
 
 static const char *state_name(mstate_t s)
 {
@@ -334,6 +336,7 @@ static void enter_state(mstate_t s)
     g_state = s;
     g_phase_ms = HAL_GetTick();
     g_ien_committed = false;
+    g_ibtd_low_seen = false;
     LOG("--> %s\r\n", state_name(s));
 }
 
@@ -402,14 +405,21 @@ static void sm_step(bool pressed)
         break;
 
     case ST_SHUTDOWN:
-        if (!IBTD_HIGH()) {                 /* step 3: confirmed shut down */
-            LOG("I_BTD LOW after %lu ms\r\n", (unsigned long)(now - g_phase_ms));
-            /* step 4 (inputs already safe-low) + step 5: remove power */
+        if (!g_ibtd_low_seen) {             /* step 3: wait for confirmed shut down */
+            if (!IBTD_HIGH()) {
+                LOG("I_BTD LOW after %lu ms\r\n", (unsigned long)(now - g_phase_ms));
+                g_ibtd_low_seen = true;
+                g_phase_ms = now;           /* repurpose: I_BTD-low timestamp for the settle */
+            } else if ((now - g_phase_ms) >= IBTD_SHUTDOWN_TIMEOUT_MS) {
+                enter_fault("I_BTD never went LOW");
+            }
+        } else if ((now - g_phase_ms) >= PWR_OFF_DELAY_MS) {
+            /* settle after I_BTD low (mirror of PWR_SETTLE_MS) so we don't cut
+             * power mid-housekeeping, then step 4/5: remove power. */
             PWR_OFF();
-            LOG("power gate OFF (power removed)\r\n");
+            LOG("power gate OFF (power removed, %lu ms after I_BTD low)\r\n",
+                (unsigned long)PWR_OFF_DELAY_MS);
             enter_state(ST_IDLE);
-        } else if ((now - g_phase_ms) >= IBTD_SHUTDOWN_TIMEOUT_MS) {
-            enter_fault("I_BTD never went LOW");
         }
         break;
 
