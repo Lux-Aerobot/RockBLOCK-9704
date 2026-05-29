@@ -993,3 +993,42 @@ boundary compiles fine but changes behaviour.
 Next: 2.2 — first actual bytes out USART1 in RUNNING (fixed test
 string, provable on scope/loopback), as the stepping stone to the
 signal-event message and the inter-MCU link framing.
+
+### Step 2.2 — first bytes out USART1 (2026-05-28, late)
+
+Branch tip `9116a3a`. While RUNNING, the firmware now transmits
+`"Hello Lux\r\n"` out USART1 every `TEST_TX_INTERVAL_MS` (2 s) via
+blocking `HAL_UART_Transmit`, with a `USART1 TX: "Hello Lux"` console
+line each time. Gated to RUNNING (USART1 only up there). No protocol —
+purely "does the link move bytes."
+
+Also added a comment documenting why PA10 (USART1 RX) is deliberately
+NOT forced low: it connects to the 9704's TXD (an *output*), so it's
+read-only on our side; driving it would contend with the modem's
+driver. Only PA9 (-> 9704 RXD, an *input*) is forced low pre-boot. The
+asymmetry is correct — protect the line you drive, never drive a line
+the modem drives.
+
+Bench: bytes confirmed leaving PA9 (read via a USB-UART adapter +
+PuTTY). Hit a baud chase first — saw garbage at 230400. Root cause was
+a **CubeMX gotcha, not firmware**: the USART1 baud field was typed as
+230400 but never committed (clicked away without pressing Enter), so it
+reverted to the 115200 default; the device ran 115200 against PuTTY's
+230400 → exact 2x mismatch → garbage. Confirmed our deferred init is
+innocent: `uart1_up()` -> `MX_USART1_UART_Init()` recomputes BRR from
+the live clock at call time, so calling it late doesn't affect baud.
+Fix: re-enter 230400, **press Enter**, regenerate, reflash. (No
+USER-CODE re-paste needed — baud lives in CubeMX's generated init.)
+
+Lesson filed: CubeMX numeric fields (baud especially) commit on
+Enter/Tab only — clicking away silently reverts. Eyeball that values
+stick after typing. This is exactly the class of error the Hello-Lux
+bench test exists to catch before the real 9704 (hard-locked 230400)
+is on the line.
+
+Session end (2026-05-28): step 1 + 2.1 hardware-validated; 2.2 code
+complete and bytes confirmed flowing (final clean `Hello Lux` read
+pending the 230400 re-commit + reflash). Next session: confirm clean
+230400 read, then 2.3 — the signal-change event as the first shaped
+outbound message, and the inter-MCU (ACTU-style) framing. All work on
+branch `lux/stm32-l452-port` (Lux-Aerobot fork).
