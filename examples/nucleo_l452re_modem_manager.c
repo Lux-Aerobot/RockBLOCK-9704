@@ -2,14 +2,15 @@
  * RB9704 modem-manager firmware — POC, Step 1: power sequencing + interlock
  * Target: Nucleo-L452RE (dev stand-in for the eventual dedicated modem MCU)
  *
- * THIS STEP (1 of 5):
- *   Implement and validate the 9704 startup / shutdown GPIO sequencing,
- *   triggered by the user button. Goal: confirm interlock correctness and
- *   read the real edge timing off the console, BEFORE any modem traffic.
- *   USART1 (to the 9704) is configured but NOT used to talk yet — its TX
- *   pin is held safely low until boot completes.
+ * STEPS:
+ *   1 (done, hardware-validated): button-triggered GPIO startup/shutdown
+ *     sequencing + damage interlock + FAULT recovery, with SIMULATE_IBTD.
+ *   2.1 (this change): bring USART1 UP (HAL init) at boot and DOWN (deinit)
+ *     at shutdown, at the correct points in the sequence. PA9 now transitions
+ *     GPIO-low (pre-boot) -> real UART idle-high (RUNNING) -> GPIO-low
+ *     (shutdown). Still no UART traffic — that is 2.2+.
  *
- * No modem is required for this step: with SIMULATE_IBTD defined, the MCU
+ * No modem is required to bench this: with SIMULATE_IBTD defined, the MCU
  * drives a spare GPIO (I_BTD_SIM) that you JUMPER to the I_BTD input, so the
  * interlock exercises the *real* GPIO read path and real electrical edges —
  * the MCU just plays the modem's I_BTD response with configurable delays.
@@ -73,22 +74,22 @@
  * directly compatible with the L452 at 3.3 V, no level shifting needed.
  *
  * ---------------------------------------------------------------------------
- * CubeMX setup for this file (step 1):
- *   - Pick the Nucleo-L452RE board defaults: USART2 (115200 8N1) on the
- *     ST-LINK VCP, B1 button, LD2 LED, default clock. That is all you need.
- *   - Do NOT configure USART1 in CubeMX for step 1. We send no UART traffic
- *     yet; this file's firmware fully owns PA9 (drives it low pre-boot,
- *     switches it to AF7 at boot). Letting CubeMX claim PA9 as USART1_TX
- *     would fight that. Step 2 (first real traffic) decides how USART1 comes
- *     up. NB: the GC docs allow "tristate (high-Z) OR logic low" pre-boot,
- *     and PA9's reset state is already high-Z, so driving it low is the
- *     belt-and-suspenders choice rather than a strict requirement.
- *   - You do NOT need to add PC0/PC1/PC2/PC3 or PA9 in CubeMX — the
- *     modem_pins_init() below configures them in USER CODE, surviving
- *     CubeMX regeneration.
- *   - SIMULATE_IBTD is #defined at the top of this file, so it is already
- *     ON — nothing to set in CubeMX or the IDE. To switch to the real modem,
- *     comment out that #define (and remove the PC3 -> PC2 jumper).
+ * CubeMX setup for this file (step 2.1):
+ *   - Board defaults: USART2 (115200 8N1) on the ST-LINK VCP, B1 button,
+ *     LD2 LED, default clock.
+ *   - NOW configure USART1: Connectivity -> USART1 -> Asynchronous,
+ *     230400 8N1 (assigns PA9 TX / PA10 RX as AF7). Then DEFER its auto-init:
+ *     Project Manager -> Advanced Settings -> in the generated-function-call
+ *     list, UNCHECK the call to MX_USART1_UART_Init() (the function is still
+ *     generated, just not called at startup). We call it ourselves at boot
+ *     (uart1_up) and HAL_UART_DeInit at shutdown (uart1_down). That is what
+ *     lets PA9 be held GPIO-low pre-boot and only handed to USART1 once
+ *     I_BTD is high — no conflict, by design.
+ *   - You do NOT need to add PC0/PC1/PC2/PC3 in CubeMX — modem_pins_init()
+ *     configures them in USER CODE. PA9 is owned by USART1 in CubeMX now, but
+ *     modem_pins_init() re-points it to GPIO-low until uart1_up() runs.
+ *   - SIMULATE_IBTD is #defined at the top of this file (already ON). To
+ *     switch to the real modem, comment it out (and remove the I_BTD jumper).
  */
 
 #include "main.h"
@@ -147,14 +148,18 @@
 #define LED_ON()    HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_SET)
 #define LED_OFF()   HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_RESET)
 
-/* CubeMX provides this (USART2 console). */
+/* CubeMX provides these. USART2 = console (auto-init at startup). USART1 =
+ * modem link — its auto-init call is DISABLED in CubeMX Advanced Settings, so
+ * we bring it up/down in user code at the sequence points (step 2.1). */
+extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
+void MX_USART1_UART_Init(void);
 
 /* ====== state machine ==================================================== */
 typedef enum {
     ST_IDLE,      /* power off, inputs safe-low, waiting for trigger */
     ST_STARTUP,   /* power applied, driving I_EN high, waiting I_BTD high */
-    ST_RUNNING,   /* booted, UART live (step 2+) */
+    ST_RUNNING,   /* booted, USART1 up (modem link live) */
     ST_SHUTDOWN,  /* I_EN low, waiting I_BTD low */
     ST_FAULT      /* interlock timeout / error; power removed, awaiting ack */
 } mstate_t;
@@ -207,15 +212,22 @@ static void uart1_tx_force_low(void)
     HAL_GPIO_WritePin(U1TX_PORT, U1TX_PIN, GPIO_PIN_RESET);
 }
 
-static void uart1_tx_to_af(void)
+/* Bring USART1 up (startup step 5, after I_BTD high). MX_USART1_UART_Init()'s
+ * MspInit puts PA9/PA10 to AF7 and enables the peripheral, so PA9 now idles at
+ * a real UART high — unlike step 1, where the pin was parked in AF with the
+ * peripheral disabled (no defined idle level). */
+static void uart1_up(void)
 {
-    GPIO_InitTypeDef g = {0};
-    g.Pin       = U1TX_PIN;
-    g.Mode      = GPIO_MODE_AF_PP;
-    g.Pull      = GPIO_NOPULL;
-    g.Speed     = GPIO_SPEED_FREQ_HIGH;
-    g.Alternate = GPIO_AF7_USART1;
-    HAL_GPIO_Init(U1TX_PORT, &g);
+    MX_USART1_UART_Init();
+}
+
+/* Bring USART1 down (shutdown step 1, "cease serial communications"). DeInit
+ * releases PA9/PA10 (MspDeInit), then we re-assert the host TX low for the
+ * unpowered phase. */
+static void uart1_down(void)
+{
+    HAL_UART_DeInit(&huart1);
+    uart1_tx_force_low();
 }
 
 /* ====== GPIO init (USER CODE so CubeMX regen won't clobber it) =========== */
@@ -368,8 +380,8 @@ static void sm_step(bool pressed)
             }
         } else if (IBTD_HIGH()) {           /* step 4: booted */
             LOG("I_BTD HIGH after %lu ms\r\n", (unsigned long)(now - g_phase_ms));
-            uart1_tx_to_af();               /* step 5: UART pins live (TX -> AF) */
-            LOG("USART1 TX -> AF (UART would init here in step 2+)\r\n");
+            uart1_up();                     /* step 5: USART1 up (PA9 -> AF, peripheral enabled) */
+            LOG("USART1 up -- TX now at real UART idle-high\r\n");
             enter_state(ST_RUNNING);
         } else if ((now - g_phase_ms) >= IBTD_BOOT_TIMEOUT_MS) {
             enter_fault("I_BTD never went HIGH");
@@ -379,10 +391,10 @@ static void sm_step(bool pressed)
     case ST_RUNNING:
         if (pressed) {
             LOG("button: shutdown\r\n");
-            uart1_tx_force_low();           /* step 1: cease comms / TX low */
+            uart1_down();                   /* step 1: cease comms (USART1 deinit + TX low) */
             IEN_LOW();                      /* step 2: I_EN low */
             g_last_ien_high = false;
-            LOG("TX low, I_EN low (shutdown requested)\r\n");
+            LOG("USART1 down, TX low, I_EN low (shutdown requested)\r\n");
             /* enter_state() sets g_phase_ms = now = the moment I_EN went low;
              * ST_SHUTDOWN times its I_BTD-low wait from that. */
             enter_state(ST_SHUTDOWN);
