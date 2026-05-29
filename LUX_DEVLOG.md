@@ -1032,3 +1032,15 @@ pending the 230400 re-commit + reflash). Next session: confirm clean
 230400 read, then 2.3 — the signal-change event as the first shaped
 outbound message, and the inter-MCU (ACTU-style) framing. All work on
 branch `lux/stm32-l452-port` (Lux-Aerobot fork).
+
+### Step 2.2 closed — clean 230400 read confirmed (2026-05-28)
+
+Re-committed the USART1 baud field in CubeMX (typed 230400 *and pressed
+Enter* this time), regenerated, reflashed. `Hello Lux\r\n` now reads
+clean on the USB-UART adapter at 230400 — no garbage. This confirms the
+earlier garbage was purely the uncommitted-baud CubeMX gotcha, not the
+deferred `uart1_up()` init (which recomputes BRR from the live clock at
+call time, so late init is baud-innocent).
+
+**Step 2.2 complete.** Next: 2.3 — the signal-change event as the first
+*shaped* outbound message + the inter-MCU (ACTU-style) framing.

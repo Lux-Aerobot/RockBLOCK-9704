@@ -36,13 +36,20 @@ Phased build of the dedicated modem-MCU firmware. Each step has a clean
 validation gate. Laptop via ST-LINK VCP stands in for the Core/L4 in
 steps 2+. See `LUX_DEVLOG.md` 2026-05-28 for the plan and rationale.
 
-- [~] **Step 1 — button-triggered GPIO startup/shutdown + interlock.**
-      Written: `examples/nucleo_l452re_modem_manager.c`. State machine +
-      damage interlock + `SIMULATE_IBTD` (jumper PC3→PC2) + TX-force-low
-      helpers. UART configured, not yet talking. **Awaiting bench
-      bring-up** to validate timing and interlock on hardware.
-- [ ] **Step 2** — 9704 comms + inter-MCU UART link + signal-event
+- [x] **Step 1 — button-triggered GPIO startup/shutdown + interlock.**
+      `examples/nucleo_l452re_modem_manager.c`. State machine + damage
+      interlock + `SIMULATE_IBTD` (jumper PC3→PC2) + TX-force-low helpers.
+      Hardware-validated on Nucleo-L452RE: normal cycle, interlock holds
+      mid-sequence, FAULT path + recover-on-ack, TX-low timing (see
+      devlog 2026-05-28).
+- [~] **Step 2** — 9704 comms + inter-MCU UART link + signal-event
       messaging (outgoing only).
+      - [x] 2.1 — deferred USART1 up/down wired into the sequence +
+            symmetric settle margins. Hardware-validated.
+      - [x] 2.2 — first bytes out USART1 in RUNNING (`Hello Lux` every
+            2 s). Clean 230400 read confirmed on a USB-UART adapter.
+      - [ ] 2.3 — signal-change event as the first *shaped* outbound
+            message + inter-MCU (ACTU-style) framing.
 - [ ] **Step 3** — MO pipeline (raw passthrough, no translation).
 - [ ] **Step 4** — MT pipeline (1:1 text passthrough).
 - [ ] **Step 5** — wrap in ACTU-style text protocol. = POC complete.
