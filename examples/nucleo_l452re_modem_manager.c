@@ -213,7 +213,13 @@ static void consolePrintf(const char *fmt, ...)
 #define LOG(fmt, ...) consolePrintf("[%8lu] " fmt, (unsigned long)HAL_GetTick(), ##__VA_ARGS__)
 
 /* ====== USART1 TX pin: force-low vs alternate-function ==================== */
-/* Step 1 validates "force the host TX (9704 RXD) low until booted". */
+/* We force ONLY the host TX (PA9 -> 9704 RXD, pin 14, a 9704 *input*) low
+ * pre-boot. RX (PA10 -> 9704 TXD, pin 13) is deliberately left untouched: it
+ * connects to a 9704 *output*, so we only ever read it. Driving PA10 low would
+ * fight the modem's TXD driver once booted (bus contention); the GC
+ * "tristate or low" rule is about not back-powering the 9704's inputs, which
+ * PA10 is not. PA10 stays high-Z (the deferred USART1 init leaves it in its
+ * reset state) until uart1_up() makes it AF-RX — both safe and rule-compliant. */
 static void uart1_tx_force_low(void)
 {
     GPIO_InitTypeDef g = {0};
