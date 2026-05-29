@@ -949,3 +949,47 @@ timestamp, trust the console (MCU truth) and suspect the probe.
 Step 2 (USART1 brought up for real, inter-MCU link to the
 laptop-as-Core, signal-change events as the first message) is now
 unblocked.
+
+### Step 2.1 hardware-validated (2026-05-28, evening)
+
+Deferred USART1 init/deinit wired into the sequence and validated on
+the bench. Branch tip `2fcd2cf`.
+
+What 2.1 added:
+- `uart1_up()` = `MX_USART1_UART_Init()` at boot (startup step 5), so
+  PA9 now idles at a *real* UART high in RUNNING — the thing step 1
+  couldn't show (step 1 parked PA9 in AF with the peripheral disabled,
+  no defined idle level).
+- `uart1_down()` = `HAL_UART_DeInit()` + re-assert TX low at shutdown
+  ("cease serial communications").
+- **Symmetric settle margins** (all 100 ms, individually tunable):
+  ```
+  startup:  PWR_ON -[PWR_SETTLE]- I_EN^ -wait I_BTD^- -[UART_UP_DELAY]- USART1 up -> RUNNING
+  shutdown: USART1 down -[UART_DOWN_DELAY]- I_EN_ -wait I_BTD_- -[PWR_OFF_DELAY]- power off -> IDLE
+  ```
+  STARTUP and SHUTDOWN each became three sub-phases (flags
+  `g_ien_committed`, `g_ibtd_high_seen`, `g_ibtd_low_seen`).
+
+Bench result: all four 100 ms gaps appear in the console; PA9 goes
+low -> UART idle-high (RUNNING) -> low; interlock and FAULT behaviour
+unchanged.
+
+CubeMX setup that makes this work (everything-in-main.c layout):
+- Configure USART1 (async 230400 8N1).
+- Advanced Settings -> Generated Function Calls: tick **Do Not
+  Generate Function Call** for `MX_USART1_UART_Init` (so it isn't
+  auto-called — we call it at boot), and untick **Visibility (Static)**
+  for USART1 (so our prototype/call links cleanly). Leave USART2 as-is.
+
+Gotcha recorded: re-pasting only the *changed middle* of the config
+block dropped the `#define SIMULATE_IBTD` line (it sits at the top of
+the block, above the delay defines). Builds clean, but the sim that
+drives I_BTD is then `#ifdef`'d out -> I_BTD never comes up -> boot
+timeout. The reset banner reports `SIMULATE_IBTD: ON/OFF`, which is
+the fast tell. Lesson: re-paste whole USER CODE regions start-to-end,
+not the visibly-changed middle — a dropped `#define` at a block
+boundary compiles fine but changes behaviour.
+
+Next: 2.2 — first actual bytes out USART1 in RUNNING (fixed test
+string, provable on scope/loopback), as the stepping stone to the
+signal-event message and the inter-MCU link framing.
