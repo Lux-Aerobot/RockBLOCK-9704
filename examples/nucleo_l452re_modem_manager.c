@@ -101,8 +101,16 @@
 /* ====== build-time config ================================================ */
 #define SIMULATE_IBTD                 /* comment out when the real 9704 is wired */
 
-#define PWR_SETTLE_MS            100U  /* wait after applying power before I_EN high */
-#define PWR_OFF_DELAY_MS         100U  /* wait after I_BTD low before removing power */
+/* Sequence settle margins — symmetric up/down:
+ *   startup:  PWR_ON -[PWR_SETTLE_MS]- I_EN high -wait I_BTD high-
+ *             -[UART_UP_DELAY_MS]- USART1 up -> RUNNING
+ *   shutdown: USART1 down -[UART_DOWN_DELAY_MS]- I_EN low -wait I_BTD low-
+ *             -[PWR_OFF_DELAY_MS]- power off -> IDLE
+ */
+#define PWR_SETTLE_MS            100U  /* power applied -> before I_EN high */
+#define UART_UP_DELAY_MS         100U  /* I_BTD high    -> before USART1 up */
+#define UART_DOWN_DELAY_MS       100U  /* USART1 down   -> before I_EN low  */
+#define PWR_OFF_DELAY_MS         100U  /* I_BTD low     -> before power off */
 #define IBTD_BOOT_TIMEOUT_MS   30000U  /* generous; tighten once real boot time known */
 #define IBTD_SHUTDOWN_TIMEOUT_MS 30000U
 #define BTN_DEBOUNCE_MS           30U
@@ -167,8 +175,9 @@ typedef enum {
 
 static mstate_t  g_state = ST_IDLE;
 static uint32_t  g_phase_ms = 0;       /* timestamp of the last intra-state action */
-static bool      g_ien_committed = false; /* has I_EN been driven this sequence? */
+static bool      g_ien_committed = false; /* has the I_EN transition for this state been done? */
 static bool      g_last_ien_high = false; /* interlock guard: last commanded I_EN level */
+static bool      g_ibtd_high_seen = false;/* startup: I_BTD high confirmed, in UART-up settle */
 static bool      g_ibtd_low_seen = false; /* shutdown: I_BTD low confirmed, in power-off settle */
 
 static const char *state_name(mstate_t s)
@@ -336,6 +345,7 @@ static void enter_state(mstate_t s)
     g_state = s;
     g_phase_ms = HAL_GetTick();
     g_ien_committed = false;
+    g_ibtd_high_seen = false;
     g_ibtd_low_seen = false;
     LOG("--> %s\r\n", state_name(s));
 }
@@ -381,13 +391,19 @@ static void sm_step(bool pressed)
                 g_phase_ms = now;
                 LOG("I_EN high (boot requested)\r\n");
             }
-        } else if (IBTD_HIGH()) {           /* step 4: booted */
-            LOG("I_BTD HIGH after %lu ms\r\n", (unsigned long)(now - g_phase_ms));
+        } else if (!g_ibtd_high_seen) {     /* step 4: wait for booted */
+            if (IBTD_HIGH()) {
+                LOG("I_BTD HIGH after %lu ms\r\n", (unsigned long)(now - g_phase_ms));
+                g_ibtd_high_seen = true;
+                g_phase_ms = now;           /* repurpose: I_BTD-high timestamp for the UART-up settle */
+            } else if ((now - g_phase_ms) >= IBTD_BOOT_TIMEOUT_MS) {
+                enter_fault("I_BTD never went HIGH");
+            }
+        } else if ((now - g_phase_ms) >= UART_UP_DELAY_MS) {
             uart1_up();                     /* step 5: USART1 up (PA9 -> AF, peripheral enabled) */
-            LOG("USART1 up -- TX now at real UART idle-high\r\n");
+            LOG("USART1 up -- TX now at real UART idle-high (%lu ms after I_BTD high)\r\n",
+                (unsigned long)UART_UP_DELAY_MS);
             enter_state(ST_RUNNING);
-        } else if ((now - g_phase_ms) >= IBTD_BOOT_TIMEOUT_MS) {
-            enter_fault("I_BTD never went HIGH");
         }
         break;
 
@@ -395,27 +411,34 @@ static void sm_step(bool pressed)
         if (pressed) {
             LOG("button: shutdown\r\n");
             uart1_down();                   /* step 1: cease comms (USART1 deinit + TX low) */
-            IEN_LOW();                      /* step 2: I_EN low */
-            g_last_ien_high = false;
-            LOG("USART1 down, TX low, I_EN low (shutdown requested)\r\n");
-            /* enter_state() sets g_phase_ms = now = the moment I_EN went low;
-             * ST_SHUTDOWN times its I_BTD-low wait from that. */
+            LOG("USART1 down, TX low\r\n");
+            /* enter_state() sets g_phase_ms = now = the USART1-down time;
+             * ST_SHUTDOWN settles UART_DOWN_DELAY_MS before driving I_EN low. */
             enter_state(ST_SHUTDOWN);
         }
         break;
 
     case ST_SHUTDOWN:
-        if (!g_ibtd_low_seen) {             /* step 3: wait for confirmed shut down */
+        if (!g_ien_committed) {             /* settle after UART down, then step 2: I_EN low */
+            if ((now - g_phase_ms) >= UART_DOWN_DELAY_MS) {
+                IEN_LOW();
+                g_last_ien_high = false;
+                g_ien_committed = true;
+                g_phase_ms = now;
+                LOG("I_EN low (%lu ms after USART1 down)\r\n",
+                    (unsigned long)UART_DOWN_DELAY_MS);
+            }
+        } else if (!g_ibtd_low_seen) {      /* step 3: wait for confirmed shut down */
             if (!IBTD_HIGH()) {
                 LOG("I_BTD LOW after %lu ms\r\n", (unsigned long)(now - g_phase_ms));
                 g_ibtd_low_seen = true;
-                g_phase_ms = now;           /* repurpose: I_BTD-low timestamp for the settle */
+                g_phase_ms = now;           /* repurpose: I_BTD-low timestamp for the power-off settle */
             } else if ((now - g_phase_ms) >= IBTD_SHUTDOWN_TIMEOUT_MS) {
                 enter_fault("I_BTD never went LOW");
             }
         } else if ((now - g_phase_ms) >= PWR_OFF_DELAY_MS) {
-            /* settle after I_BTD low (mirror of PWR_SETTLE_MS) so we don't cut
-             * power mid-housekeeping, then step 4/5: remove power. */
+            /* settle after I_BTD low so we don't cut power mid-housekeeping,
+             * then step 4/5: remove power. */
             PWR_OFF();
             LOG("power gate OFF (power removed, %lu ms after I_BTD low)\r\n",
                 (unsigned long)PWR_OFF_DELAY_MS);
