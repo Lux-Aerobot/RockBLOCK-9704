@@ -11,6 +11,14 @@ the ACTU SS protocol. EO companion deferred to a future HW revision; will
 re-enter as a second client of the same L4-side API (likely routed through
 L4 rather than direct to L0).
 
+**Refinements (JC sync, 2026-05-29):** the manager goes on **its own board**
+this run — two boards (manager + core). Consolidating modem ownership onto
+the Core later is a **future hardware revision, not a firmware toggle**; the
+option is preserved (affordable/viable), decided later on power/isolation
+-vs-BOM. **Power:** one 5 V bus brings up manager + modem rail together; the
+**manager** gates the modem's power (load-switch IC) and owns all enable
+pins + the link ("no modem without the manager"). See LUX_DEVLOG 2026-05-29.
+
 See `LUX_DEVLOG.md` 2026-05-27 entry for full decision context and the
 protocol design sketch.
 
@@ -108,6 +116,20 @@ steps 2+. See `LUX_DEVLOG.md` 2026-05-28 for the plan and rationale.
             See LUX_DEVLOG 2026-05-29. **Bench bring-up uses manual
             bench-supply V_IN+ control** until the IC is sourced — the
             firmware sequencing is power-source-agnostic.
+      - [ ] **Power-enable lives on the MANAGER** (decided 2026-05-29):
+            the load-switch IC gating the modem's V_IN+ is driven by the
+            manager, off the always-on 5 V bus. Manager owns all of:
+            power-enable, I_EN, I_BTD, and the JSPR link.
+      - [ ] **Hardware interlock (EE/JC).** A buffer / bus-switch on the
+            lines we drive into the modem, enabled by the modem's ready
+            signal, so a firmware bug can't drive the modem pre-boot
+            (mirrors GC's USB reference design). Defense-in-depth on top of
+            the software interlock. **Design notes:** I_BTD is the natural
+            enable for the **UART data lines** (matches "UART only after
+            I_BTD high"); **I_EN cannot be gated by I_BTD** (I_EN precedes
+            boot → circular). **Confirm:** distinct power-good output on the
+            16-pin connector vs using I_BTD — JC to check the schematic pin
+            naming before wiring the buffer enable.
       - [ ] Pick four L452 GPIOs: `P_EN`, `I_EN`, `I_BTD`, plus
             optionally a "modem ready" status LED. TBD on production
             board layout; on Nucleo, anything spare on the Arduino
@@ -503,6 +525,21 @@ Sketch in `LUX_DEVLOG.md` 2026-05-27. To turn into a spec:
 - [ ] **Decide L4 ↔ L0 link parameters**: baud (probably 230400 to
       match modem-side, or 115200), parity, hardware flow control
       yes/no.
+      - [ ] **Serial transport mode (JC sync 2026-05-29).** Modem link
+            (manager): **RX = DMA** (≤300 ms segment deadline,
+            un-backpressurable modem), **TX = interrupt** (non-blocking;
+            we schedule sends — DMA-TX only if a channel is spare). Core↔
+            manager link: **DMA-capable on the L4 (Core) side** to keep the
+            move-to-Core option open, but **interrupt near-term** (tiny
+            frames). Current bring-up firmware is blocking-TX + per-byte-IT
+            -RX; migrate to IT-TX + circular-DMA-RX
+            (`HAL_UARTEx_ReceiveToIdle_DMA`) when the manager part is
+            chosen — the M4 bring-up build can stay as-is meanwhile.
+            Channel budget (L0 ≈ 7, L452 = 14) feeds L0 part selection.
+- [ ] **Convenience GPIO/IRQ line between Core and manager (JC sync
+      2026-05-29).** A dedicated signal pin (+ interrupt) separate from the
+      UART. No committed use yet — manager→Core attention/IRQ, power-good
+      relay, etc. Cheap optionality; add the pin now, decide use later.
 - [ ] **Provision dedicated topics** in Cloudloop:
       - 315 (RED) — telemetry
       - 316 (ORANGE) — imagery (deferred in this HW rev; provision

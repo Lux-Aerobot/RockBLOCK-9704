@@ -1230,3 +1230,81 @@ This also absorbs the dropped USB boot-probe: the boot-gating question
 (power-gated vs I_EN-gated) falls straight out of the manual run — button
 proceeds to RUNNING ⇒ I_EN-gated; `FAULT: I_BTD already HIGH before boot
 requested` ⇒ power-gated. No scope, no second power source.
+
+### JC design sync — power architecture, two-board split, hardware interlock, DMA confirmed
+
+Sync with JC (board/EE owner). The DMA + optionality decisions from
+earlier today were confirmed; several power/board-architecture points were
+settled and two new hardware ideas came up. RB9704-relevant outcomes:
+
+**DMA (confirmed, sharpened):**
+- **Modem link (manager side): RX = DMA** — the no-drop-bytes play,
+  justified by the ≤300 ms segment deadline + un-backpressurable modem.
+  **TX = interrupt, not blocking** — we choose when to send, so a transmit
+  interrupt is enough; DMA-TX only if a channel is genuinely spare. (Note:
+  the current bring-up firmware has *blocking* TX + per-byte IT RX — these
+  become IT-TX and DMA-RX when we build out the manager / pick the part;
+  the M4 bring-up build can stay as-is meanwhile.)
+- **Core↔manager link: DMA-capable on the Core (L4) side** to preserve the
+  move-to-Core option, but **interrupt is fine near-term** — inter-MCU
+  frames are tiny (~50 B, one frame per full message), an IT drain keeps up
+  easily.
+- DMA **channels** are the real constraint, not pins: classic L0 ≈ 7,
+  L452 = 14. Both still building DMA fluency; agreed to mark the lines
+  DMA-capable and "get there as we understand it." → folds into L0 part
+  selection (favour channel headroom).
+
+**Power architecture (settled):**
+- **No modem without the manager** — there is no scenario where the modem
+  is powered but the manager isn't. So a single 5 V bus brings up the
+  manager and the modem rail *together*; the **manager** then gates the
+  modem's actual power via the power-enable (the load-switch IC specced
+  earlier today) and owns *all* the modem's enable pins + the JSPR link.
+  "Manager handles the modem entirely."
+- **Resolves the open TODO question** (*where does PWR_EN live?*) → **on the
+  manager.** The load-switch IC is the manager-controlled gate on the
+  modem's V_IN+ off the always-on bus.
+- **Manager goes on its own board this run** (JC's call): cleaner power
+  sequencing, fault isolation, and — critically — revisability (swap modem
+  / move to a 9603 / reflash the manager without touching the Core). A
+  power daughterboard handles the switching (also hedges BQ25750 charger
+  stock risk).
+- Modem-power-cut capability stays (manager *can* disable modem power,
+  e.g. future sleep), but the always-on-this-rev policy is unchanged.
+
+**Two boards this run; consolidation = future HW rev (Liam clarification).**
+Moving modem ownership onto the Core later is a *hardware revision*, not a
+firmware toggle — first run is explicitly two boards (manager board + core
+board). The option is preserved (affordable, viable), decided later on
+power/isolation-vs-BOM; the ACTU-style message API stays the boundary that
+keeps the choice deferrable.
+
+**NEW — hardware interlock (JC, EE-side; direction agreed):** beyond our
+software interlock, add a *hardware* lockout so a firmware bug can't drive
+the modem before it's ready — mirroring GroundControl's USB reference
+design, which holds the data lines off until the modem is good. Approach:
+a buffer / bus-switch on the lines we drive into the modem, enabled by the
+modem's ready signal. Defense-in-depth on the damage-class concern; details
+TBD by JC.
+- *Design note:* I_BTD (booted) is the natural enable for gating the
+  **UART data lines** (matches our software "UART only after I_BTD high"
+  step). But **I_EN cannot be gated by I_BTD** — I_EN must be driven
+  *before* boot, so I_BTD doesn't exist yet (circular dependency). **Open
+  question:** is there a distinct *power-good* output on the 16-pin
+  connector, or is I_BTD the signal to use? JC noted the schematic names
+  things differently — confirm which pin feeds the buffer enable before
+  wiring it.
+
+**NEW — convenience GPIO/IRQ line between Core and manager:** a dedicated
+signal pin (+ interrupt) separate from the UART. No committed use yet —
+gives options (manager→Core attention/IRQ, power-good relay, etc.). Cheap
+to add now, decide use later.
+
+**Minor — modem thermal:** not a current concern; we don't monitor 9704
+die temp. GroundControl rolled a revision to fix low-temp (−20 °C)
+failures; our unit is post-revision.
+
+*(The sync also covered non-RB9704 board work — IMU 6- vs 9-axis + an
+external camera-mounted IMU, magnetometer sourcing, Qwiic/SparkFun
+quick-connects, solar-board consolidation, and milestone-chain schedule
+risk. Out of scope for these docs; parked for Liam to route.)*
