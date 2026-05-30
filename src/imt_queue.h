@@ -32,6 +32,15 @@ extern "C" {
     #ifndef IMT_PAYLOAD_SIZE
         #define IMT_PAYLOAD_SIZE 5000U + IMT_CRC_SIZE
     #endif
+#elif defined(STM32_HAL)
+    #ifndef IMT_PAYLOAD_SIZE
+        /* Embedded default. The non-Arduino default below is 100 kB + CRC,
+         * which at IMT_QUEUE_SIZE x 2 (MO + MT) overflows typical MCU SRAM
+         * (e.g. ~200 kB on an STM32L452's 160 kB). Sized here for Lux node
+         * traffic (~150 B telemetry, <50 B commands) with generous headroom.
+         * Override with -D IMT_PAYLOAD_SIZE per-project for larger messages. */
+        #define IMT_PAYLOAD_SIZE 2048U + IMT_CRC_SIZE
+    #endif
 #else
     #ifndef IMT_PAYLOAD_SIZE
         #define IMT_PAYLOAD_SIZE 100000U + IMT_CRC_SIZE
