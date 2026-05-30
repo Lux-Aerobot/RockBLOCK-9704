@@ -1568,3 +1568,18 @@ a timer — the production direction — not an ever-longer watchdog.)
 intermittent 405 / TX integrity (matters for MO); (4) fix stale "fresh
 power-up" comment in main.c; (5) DMA RX swap; (6) MT echo (sky view). The comms
 path itself is proven (modem answered the manual GET).
+
+### S2 (part 4): applying both fixes (end of session)
+
+Liam applied **`uart1_down()` in ST_FAULT** — when I_BTD is high: DeInit USART1
++ force PA9 low, then drive I_EN low. Proper cease-comms-then-disable order, and
+the `HAL_UART_DeInit` gives the next `uart1_up()` a clean re-init (gState→RESET →
+MspInit runs), fixing the FAULT-recycle deafness so we can iterate without
+reflashing. Confirmed correct (harmless that the I_BTD-high block re-runs each
+~2 ms loop during the ~17 ms shutdown window — idempotent; optional tidy: guard
+or move to `enter_fault`). Plus the **IWDG 1500→4000 (~8 s)** CubeMX step.
+Testing this combo before session end — expecting `rbBegin` to finally run to
+completion: `rbBegin OK` (first contact) if the modem answers cleanly, or a
+clean retryable FAULT if it 405s/goes silent. Manager-side build still
+uncommitted (validate first); fork library fixes are committed (`40363fd`,
+`a2f1197`).
