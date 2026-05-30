@@ -1498,3 +1498,43 @@ the library, the IT ring, and `setApi`. Bytes back (`200 apiVersion {...}`) =>
 modem replies and our RX path missed it; silence => modem isn't getting/
 answering our TX; an unexpected frame => modem in a waiting/odd state. Settles
 (a)/(b)/(c) in one run. Modem-manager build for this run stays uncommitted.
+
+### S2 (part 2): manual GET probe — the modem DOES answer; picture refined
+
+Ran the manual `GET apiVersion {}\r` + raw blocking RX dump. Results:
+- Fresh start, run A: **`200 apiVersion {"supported_versions":[{"major":1,
+  "minor":7,...}]}`** — clean reply (modem API v1.7).
+- Fresh start, run B: **`405 MALFORMED {}.`** — modem received and *parsed* our
+  command but found it malformed.
+- After FAULT → I_EN re-enable (manager still running, no reset/power-cycle):
+  **`0 bytes`** (deaf).
+
+Three findings:
+
+1. **TX-to-modem works.** The modem replies to our commands (200 clean, or 405
+   when garbled). The full path — TX, RX, baud, wiring, library — is good;
+   first contact is essentially proven.
+
+2. **Intermittent TX corruption.** The *same* `GET apiVersion {}\r` gives 200
+   (clean) one run and 405 MALFORMED another → bytes occasionally garbled in
+   transit, or residual bytes in the modem's RX concatenating with our command.
+   A signal-integrity / framing / residual-byte issue to chase (matters for
+   reliable MO sends). NOT fatal for bring-up: `setApi`'s `waitForJsprMessage`
+   ignores a 405 (waits for a 200 apiVersion) and `rbBegin` retries, so a clean
+   GET should get through.
+
+3. **The "deafness" is firmware, not the modem — the earlier "needs power
+   cycle" theory was WRONG (corrected by Liam's manager-reset test).** A manager
+   *reset* (no modem power cycle) gets a reply; only the FAULT → I_EN-recycle
+   path (MCU keeps running) goes deaf. A reset/power-cycle gives a clean USART1
+   re-init (gState RESET → HAL_UART_Init runs MspInit); `enter_fault` only
+   forces PA9 low and never `HAL_UART_DeInit`s USART1, so the next `uart1_up`
+   re-init is stale → deaf. **Fix (next session): `enter_fault` should
+   `uart1_down` (DeInit USART1)** like the graceful shutdown, so every re-enable
+   gets a fresh UART. (Stale "fresh power-up" comment in main.c to fix too.)
+
+Net: comms path proven (modem answers). Remaining for S1: (1) clean UART
+re-init on FAULT, (2) chase the intermittent 405 / TX integrity, (3) DMA RX
+swap, (4) MT echo (needs sky view). Restored `rbBegin` (patient + retry) should
+reach RUNNING on a fresh start by retrying past an occasional 405 — test
+pending.
