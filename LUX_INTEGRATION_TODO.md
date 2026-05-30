@@ -638,7 +638,28 @@ Things worth fixing in the library itself, not just our application:
 - [ ] **Make JSPR scratch buffers configurable.** `RX_BUFFER_SIZE` /
       `TX_BUFFER_SIZE` / `JSPR_MAX_JSON_LENGTH` are fixed at 8 KB / 8 KB
       / 3.5 KB. They dominate RAM on tight MCUs. Should be overridable
-      like `IMT_PAYLOAD_SIZE` already is.
+      like `IMT_PAYLOAD_SIZE` already is. (Note: `IMT_PAYLOAD_SIZE` got an
+      `STM32_HAL` default of 2048+CRC in the fork — commit 40363fd — since the
+      non-Arduino default is 100 kB and overflows MCU RAM.)
+- [ ] **`setApi` reply window too tight** ([rockblock_9704.c:155]). Sends
+      `GET apiVersion` then checks with a *non-blocking* `receiveJspr`, only 2×
+      with `delay(5)` between (~10 ms total). A ready modem that replies slower
+      — or is still booting — is missed, so `rbBegin` returns false. **This is
+      the current S1 first-contact blocker** (see LUX_DEVLOG 2026-05-30). Patch:
+      use `waitForJsprMessage(&response, "apiVersion", JSPR_RC_NO_ERROR,
+      timeout)` (pattern already in jspr.c). Likely needed for reliable bring-up.
+- [ ] **`clearLeftoverData` / `receiveJspr` can infinite-loop on continuous RX**
+      ([rockblock_9704.c:137], [jspr.c:55]). No bound/timeout on the drain/read
+      loops: if the line streams continuously (modem boot burst, or a TXD-low
+      0x00 flood) they never exit → hung supervisor (caught 2026-05-30; the
+      manager's IWDG now backstops it). Patch: cap the drain (byte-budget or
+      time bound).
+- [ ] **`rbSendMessageAny` bool-compare bug** ([rockblock_9704.c:430]).
+      `if(queued >= 0)` where `queued` is `bool` → always true; defeats the
+      queue-add success check. Sync-API-only (we use async) and bounded by a
+      downstream NULL guard, but a real bug. Fix: `if(queued)`. Also remove the
+      dead locals in `sendMoFromQueue` (initCrc/segmentStart/segmentLength/
+      encodedBytes). (Found via build warnings 2026-05-30.)
 
 ---
 

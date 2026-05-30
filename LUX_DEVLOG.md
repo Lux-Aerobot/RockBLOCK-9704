@@ -1363,3 +1363,100 @@ may need more settle before it answers.
 **Task #10 (first real-modem power-up) complete.** Next: real JSPR comms
 over USART1 to the modem — the library's first contact on STM32 hardware —
 then 2.3 (signal-event as the first shaped outbound message + ACTU framing).
+
+---
+
+## 2026-05-30 — Day 5 (Sat): S1 — library integrated; first-contact blocker diagnosed
+
+Weekend plan: 4 × ~2 h sessions. S1 goal = manager talking to the RB module,
+signal status + MT echo on the console, DMA RX. Outcome: library integrated
+and a lot surfaced — first contact not yet achieved, but we now know exactly
+why, and it isn't the link.
+
+### Setup
+
+- New CubeIDE project `lux-modem-manager-bringup` put under git as its own
+  Lux-Aerobot repo (matches the per-node convention). RB9704 library added as a
+  **git submodule** of the fork (`Lib/RockBLOCK-9704` @ `lux/stm32-l452-port`),
+  so library edits stay in the fork (with this devlog) and are reusable for the
+  L0/core later.
+- Library wired into the CubeIDE build (source folder + include paths +
+  `STM32_HAL`; non-STM32 presets / arduino .cpp / wingetopt / ekermit excluded).
+  In RUNNING: `rbBegin(&huart1)`, `rbPoll()`, constellationState→signal log,
+  mtMessageComplete→MT echo. IT RX path first (DMA RX to follow).
+
+### RAM gotcha (fixed): non-Arduino IMT_PAYLOAD_SIZE default is 100 kB
+
+First build overflowed RAM by ~88 kB. The library's non-Arduino default is
+`IMT_PAYLOAD_SIZE = 100000 + CRC`, and the MO+MT queues are
+`[IMT_QUEUE_SIZE][IMT_PAYLOAD_SIZE]` → ~200 kB on a 160 kB part. Added an
+`#elif defined(STM32_HAL)` branch in `imt_queue.h` defaulting to 2048+CRC
+(fork commit `40363fd`), `#ifndef` guard preserved for per-project override.
+Confirms the override is **mandatory** on any MCU — feeds L0 part selection.
+
+### Hang found → independent watchdog added (validated)
+
+A blocking library call hung the supervisor: `rbBegin` → `clearLeftoverData`'s
+`while(peek>0)` spun forever on continuous RX bytes, so the button / interlock /
+FAULT couldn't run — the modem couldn't be safed. A state-machine timeout can't
+recover a *blocked callee*; an IWDG can. Added IWDG (~3 s, refreshed each loop);
+on a hang → reset → `modem_pins_init` drives I_EN low + power off → IDLE; boot
+logs `RCC_FLAG_IWDGRST`. Hardware-validated: the hang now auto-recovers safely
+instead of wedging. (commit `1aeec22`)
+
+### FAULT-recovery bug found → fixed (validated)
+
+On a clean `rbBegin`-fail FAULT, the button couldn't recover. `enter_fault`'s
+safe action is `PWR_OFF` — fine in production (load switch cuts power → I_BTD
+drops) but a **no-op on the bench's manual supply**, so I_BTD stayed high and
+the FAULT-ack (gated on `!IBTD_HIGH`) deadlocked. Fix: in `ST_FAULT`, drive I_EN
+low when I_BTD is **high** (interlock-allowed, since I_BTD went high after I_EN
+high) — shuts the modem down → I_BTD drops → recovery proceeds. Works on bench +
+production, and strictly safer than the old `if(!IBTD_HIGH()) IEN_LOW()` (which
+drove I_EN low in the unsafe never-booted direction). Validated:
+button-out-of-FAULT now works. (commit `9d44b9c`)
+
+### ⭐ Root cause of "no first contact": I_BTD-high ≠ JSPR-ready
+
+A temporary raw-RX probe (dump 32 bytes before `rbBegin`) cracked it. Attempt 1
+caught clean **`299 bootInfo {"image_type":"prod..."}`** — valid JSPR at 230400.
+So **RX / TX / baud / wiring are all proven good; the link was never the
+problem.** (Bonus: confirms the modem is running production firmware.)
+
+The real issue: after I_BTD, the modem emits an unsolicited `299 bootInfo`
+burst, and during early boot its TXD sits low (reads as continuous `0x00`
+framing errors — the `'2'/'g'` + `00 00 …` floods in probe attempts 2 & 3). We
+call `rbBegin` ~200 ms after I_BTD, **mid-boot**, producing the two failures
+seen across runs:
+- **Hang**: `clearLeftoverData` never empties while boot bytes keep arriving.
+- **Clean FAULT**: boot bytes done, but the modem isn't command-ready yet, so
+  `setApi` gets no `apiVersion` reply within its tight **2 × 5 ms non-blocking**
+  window → `rbBegin` returns false.
+
+The hang-vs-fail intermittency was just *where in the boot sequence* we sampled.
+Confirms the "I_BTD ≠ JSPR-ready" flag from the power-up entry.
+
+### Proposed fix (converge next session)
+
+Firmware (no library change): after USART1 up, **drain RX until quiet for
+~500 ms** (modem done booting) before `rbBegin` — kills the `clearLeftoverData`
+hang and guarantees the modem is past its boot chatter; the drain logging also
+reveals the real boot-chatter duration. Then `rbBegin` (with a couple retries).
+
+Open question / limit of "firmware handles it": even with a ready modem,
+`setApi`'s 2 × 5 ms non-blocking window may be too tight for the reply latency
+(and each `rbBegin` retry resets the RX ring, so retries are a weak hedge). If
+`rbBegin` still clean-fails after the quiet-wait, the clean fix is a small
+**library** change — make `setApi` wait for the reply with a real timeout
+(`waitForJsprMessage`) instead of 2 impatient checks. Deferred per "don't touch
+the library yet," but flagged as likely-necessary and a good upstream patch.
+
+### Status at end of S1 (time-boxed)
+
+- **Validated wins:** library integrated + builds; RAM fixed; **watchdog**
+  safety net; **FAULT recovery** on the bench; **link proven good** (clean
+  JSPR RX). All the safety/robustness scaffolding now exists.
+- **Not done:** first contact (`rbBegin` success), signal/MT echo, DMA RX. S1
+  carries over — but the blocker is understood and a fix is staged.
+- Committed/pushed: `lux-modem-manager-bringup` @ `9d44b9c`; fork @ `40363fd`.
+- Modem powered down safely at session end.
