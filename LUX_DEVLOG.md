@@ -1460,3 +1460,41 @@ the library yet," but flagged as likely-necessary and a good upstream patch.
   carries over — but the blocker is understood and a fix is staged.
 - Committed/pushed: `lux-modem-manager-bringup` @ `9d44b9c`; fork @ `40363fd`.
 - Modem powered down safely at session end.
+
+### S2 (part 1, same day): patient-handshake fix — decisive negative
+
+Applied the firmware RX-quiet wait (drain boot chatter before `rbBegin`) +
+the library patience fix (`setApi`/`setSim`/`setState` now use
+`waitForJsprMessage` instead of a single non-blocking `receiveJspr`; fork
+`a2f1197`). Result: **`rbBegin` still gets no reply** — and because it now
+waits patiently (~1 s/step) instead of failing fast, it blocks past the 3 s
+IWDG, so all three attempts end in a watchdog reset (expected side-effect of
+patience, not a regression). So `setApi`'s tight window was **not** the (sole)
+blocker.
+
+State now firmly established:
+- Modem healthy (Python over USB ✓); RX works (we receive `299 bootInfo` over
+  the 16-pin UART ✓); TX wire continuous to the modem's **RXD / pin 14** ✓;
+  **USB always unplugged** on the bench (so not a USB-vs-16-pin mode issue).
+- The quiet-wait drains ~168 bytes of boot chatter (~870 ms) then the line is
+  quiet; we send `GET apiVersion`; nothing comes back.
+- So: **the modem transmits to us over the 16-pin but does not answer our
+  commands.**
+
+Remaining candidates: (a) our TX bytes aren't landing correctly at the modem
+despite continuity (framing / level / wrong-pin-despite-continuity); (b) our
+RX-handling path (IT ring / library) is missing the reply; (c) Liam's thought
+— the modem emits a boot frame it expects a response to and we miss it in the
+UART-up gap, leaving it not command-ready. (c) is less likely (the Python
+binding runs the same `setApi` handshake with no special boot handling) but
+the probe below informs it.
+
+The patience fix is **kept** regardless (real bug; fork `a2f1197`).
+
+Next (staged in the manager firmware): a decisive **manual `GET apiVersion`
++ raw blocking RX dump** — send `"GET apiVersion {}\r"` out PA9, then
+`HAL_UART_Receive` a chunk (~1.5 s timeout) and hex/char-dump it, bypassing
+the library, the IT ring, and `setApi`. Bytes back (`200 apiVersion {...}`) =>
+modem replies and our RX path missed it; silence => modem isn't getting/
+answering our TX; an unexpected frame => modem in a waiting/odd state. Settles
+(a)/(b)/(c) in one run. Modem-manager build for this run stays uncommitted.

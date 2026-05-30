@@ -644,10 +644,12 @@ Things worth fixing in the library itself, not just our application:
 - [ ] **`setApi` reply window too tight** ([rockblock_9704.c:155]). Sends
       `GET apiVersion` then checks with a *non-blocking* `receiveJspr`, only 2×
       with `delay(5)` between (~10 ms total). A ready modem that replies slower
-      — or is still booting — is missed, so `rbBegin` returns false. **This is
-      the current S1 first-contact blocker** (see LUX_DEVLOG 2026-05-30). Patch:
-      use `waitForJsprMessage(&response, "apiVersion", JSPR_RC_NO_ERROR,
-      timeout)` (pattern already in jspr.c). Likely needed for reliable bring-up.
+      — or is still booting — is missed, so `rbBegin` returns false. **Fixed in fork a2f1197 (2026-05-30):** swapped to
+      `waitForJsprMessage(&response, target, JSPR_RC_NO_ERROR, 1)` across
+      setApi/setSim/setState. But it was **not** the S1 first-contact blocker —
+      even patient, the modem still doesn't answer our 16-pin commands (manual
+      GET probe pending; see LUX_DEVLOG 2026-05-30). Real bug + good upstream
+      patch regardless.
 - [ ] **`clearLeftoverData` / `receiveJspr` can infinite-loop on continuous RX**
       ([rockblock_9704.c:137], [jspr.c:55]). No bound/timeout on the drain/read
       loops: if the line streams continuously (modem boot burst, or a TXD-low
