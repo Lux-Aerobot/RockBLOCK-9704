@@ -164,7 +164,7 @@ bool setApi(void)
 #endif
         if(jsprGetApiVersion())
         {
-            if (receiveJspr(&response, "apiVersion"))
+            if (waitForJsprMessage(&response, "apiVersion", JSPR_RC_NO_ERROR, 1))
             {
                 if(JSPR_RC_NO_ERROR == response.code)
                 {
@@ -173,7 +173,7 @@ bool setApi(void)
                     if(!apiVersion.activeVersionSet)
                     {
                         jsprPutApiVersion(&apiVersion.supportedVersions[0]);
-                        receiveJspr(&response, "apiVersion");
+                        waitForJsprMessage(&response, "apiVersion", JSPR_RC_NO_ERROR, 1);
                     }
                     if(JSPR_RC_NO_ERROR == response.code || apiVersion.activeVersionSet)
                     {
@@ -192,7 +192,7 @@ bool setSim(void)
     bool set = false;
     if(jsprGetSimInterface())
     {
-        if (receiveJspr(&response, "simConfig"))
+        if (waitForJsprMessage(&response, "simConfig", JSPR_RC_NO_ERROR, 1))
         {
             if(JSPR_RC_NO_ERROR == response.code)
             {
@@ -202,7 +202,7 @@ bool setSim(void)
                 if(!simInterface.ifaceSet || simInterface.iface != SIM_INTERNAL)
                 {
                     putSimInterface(SIM_INTERNAL);
-                    receiveJspr(&response, "simConfig");
+                    waitForJsprMessage(&response, "simConfig", JSPR_RC_NO_ERROR, 1);
                     if ((JSPR_RC_NO_ERROR == response.code) &&
                         (strncmp(response.target, "simConfig", JSPR_MAX_TARGET_LENGTH) == 0))
                     {
@@ -230,7 +230,7 @@ bool setState(void)
     bool set = false;
     if(jsprGetOperationalState())
     {
-        if(receiveJspr(&response, "operationalState"))
+        if(waitForJsprMessage(&response, "operationalState", JSPR_RC_NO_ERROR, 1))
         {
             if(JSPR_RC_NO_ERROR == response.code)
             {
@@ -245,7 +245,7 @@ bool setState(void)
                     else if(state.operationalState == INACTIVE)
                     {
                         putOperationalState(ACTIVE);
-                        receiveJspr(&response, "operationalState");
+                        waitForJsprMessage(&response, "operationalState", JSPR_RC_NO_ERROR, 1);
                         if(JSPR_RC_NO_ERROR == response.code)
                         {
                             set = true;
@@ -254,11 +254,11 @@ bool setState(void)
                     else //if its in another mode it may need to be turned inactive first
                     {
                         putOperationalState(INACTIVE);
-                        receiveJspr(&response, "operationalState");
+                        waitForJsprMessage(&response, "operationalState", JSPR_RC_NO_ERROR, 1);
                         if(JSPR_RC_NO_ERROR == response.code)
                         {
                             putOperationalState(ACTIVE);
-                            receiveJspr(&response, "operationState");
+                            waitForJsprMessage(&response, "operationalState", JSPR_RC_NO_ERROR, 1);
                             if(JSPR_RC_NO_ERROR == response.code)
                             {
                                 set = true;
