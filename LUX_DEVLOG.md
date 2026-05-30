@@ -1583,3 +1583,64 @@ completion: `rbBegin OK` (first contact) if the modem answers cleanly, or a
 clean retryable FAULT if it 405s/goes silent. Manager-side build still
 uncommitted (validate first); fork library fixes are committed (`40363fd`,
 `a2f1197`).
+
+### S2 (part 5): 8 s IWDG STILL trips — the watchdog is catching a slow handshake, not a hang ⭐
+
+Ran the combo (IWDG ~8 s + `uart1_down` in FAULT). Console: clean
+power→I_EN→I_BTD@930 ms→USART1 up→boot-settle (drained 168 B, RX quiet @871 ms)
+→ **then watchdog reset during `rbBegin`**, then a clean force-safe to IDLE on
+the reset. So the recovery path works now, but `rbBegin` still doesn't finish.
+
+**Re-derived the exact `rbBegin` time budget from source (not estimate):**
+`waitForJsprMessage` (jspr.c:146) loops `receiveJspr` + `delay(10)` until the
+expected `target`+`code` arrives **or** `(millis()-start) > timeoutSeconds*1000`
+≈ **1.00 s**. Every step that doesn't get its expected reply burns its *full*
+~1 s. On the path where the GETs succeed (proven — first contact) but the
+PUT/unsolicited confirmations don't:
+- `setApi` — GET ok, PUT `apiVersion` + wait, ×2-iteration loop → **~1–2 s**
+- `setSim` — GET ok, PUT `simConfig` + wait, then wait for **unsolicited**
+  `simStatus` → **~2 s**
+- `setState` — GET ok, PUT `operationalState` + wait, possibly INACTIVE→ACTIVE
+  (two more puts+waits) → **~3–4 s**
+
+Sum ≈ **7–9 s of pure timeout — right at the 8 s IWDG boundary.** Add **one**
+`405 MALFORMED` (never matches `JSPR_RC_NO_ERROR`, so it burns the whole 1 s)
+and it sails past 8 s → reset. This exactly matches the console.
+
+**Two things this clarifies:**
+1. **Bumping the watchdog is a band-aid** — it masks that *confirmation* replies
+   aren't arriving. The first-contact manual test only exercised a **GET**; the
+   handshake also does **PUTs** + waits for **unsolicited** frames
+   (`simStatus`, op-state transitions) — exactly the parts exposed to the
+   intermittent `405`/TX-integrity issue.
+2. The watchdog is doing its job; it's just guillotining a slow-but-progressing
+   handshake, not a true wedge.
+
+**Decisive next move — turn on the library's own trace (one run answers it).**
+`jspr.c` already has `#ifdef DEBUG` → `printf("SENT: …")` (l.27–31) and
+`printf("RECEIVED: …")` (l.76–78) for *every* JSPR frame. Build the library
+with `DEBUG` defined and we see exactly which step stalls and whether it's a
+`405`. **Gotcha (verified):** the manager's `consolePrintf` bypasses `printf`
+(`vsnprintf`→`HAL_UART_Transmit(&huart2)`), and `_write`/`__io_putchar` are
+still the **weak ST stubs** in `syscalls.c` — so library `printf` currently goes
+*nowhere*. Add the retarget first:
+```c
+int __io_putchar(int ch){ HAL_UART_Transmit(&huart2,(uint8_t*)&ch,1,10); return ch; }
+```
+then `-DDEBUG` the library → full SENT/RECEIVED trace on the console.
+
+**Robustness fix (so a legit-slow handshake survives):** feed the IWDG from
+inside the **`delay()` shim** (crossplatform layer) — it's called by
+`waitForJsprMessage`'s `delay(10)` and `setApi`'s `delay(5)`, so the dog stays
+fed through legitimate waiting. Critically, `clearLeftoverData` is a *tight*
+`serialPeek/serialRead` spin with **no `delay()`**, so the original hang we
+guarded against is **still** caught. Surgical: keeps the safety net, removes the
+false trip. (Do NOT pet inside `serialRead` — that would defeat the
+`clearLeftoverData` hang-catch.)
+
+**Likely outcome once TX is clean:** every command gets its `200/299` in tens of
+ms, `waitForJsprMessage` returns immediately, whole `rbBegin` finishes in <1 s —
+the 8 s watchdog stops mattering. So priority order: **(1) `__io_putchar`
+retarget + `-DDEBUG` trace** (see the 405s); **(2) fix TX integrity** (root
+cause the trace reveals); **(3) IWDG-in-`delay()`** hardening. No code touched
+this session (docs only); diagnosis logged for a clean resume.
