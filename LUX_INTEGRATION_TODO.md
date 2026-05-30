@@ -58,18 +58,20 @@ steps 2+. See `LUX_DEVLOG.md` 2026-05-28 for the plan and rationale.
             2 s). Clean 230400 read confirmed on a USB-UART adapter.
       - [ ] 2.3 — signal-change event as the first *shaped* outbound
             message + inter-MCU (ACTU-style) framing.
-      - [ ] **S1 resume — VISIBILITY FIRST (top of next session).** Before
-            chasing the `405`/watchdog any further, turn on the library's own
-            JSPR trace so we stop guessing. `jspr.c` has `#ifdef DEBUG` →
-            `printf("SENT: …")`/`printf("RECEIVED: …")` per frame (l.27–31,
-            76–78). **Gotcha:** the manager's `consolePrintf` bypasses `printf`
-            and `_write`/`__io_putchar` are still the weak ST stubs in
-            `syscalls.c`, so library `printf` goes nowhere. Add the retarget
-            `int __io_putchar(int ch){ HAL_UART_Transmit(&huart2,(uint8_t*)&ch,
-            1,10); return ch; }` then build the library with `-DDEBUG`. One run
-            shows exactly which handshake step stalls and whether it's a `405`
-            (→ TX integrity) or an absent reply (→ timing/readiness). Then fix
-            the root cause; the watchdog-feed (above) is hardening, not the fix.
+      - [x] **`__io_putchar` retarget — DONE (manager `main.c`, uncommitted).**
+            Root cause of the "watchdog reset" found and fixed 2026-05-30
+            (S2-part-6, devlog): the Debug build defines `DEBUG`, so jspr.c's
+            `printf("SENT:/RECEIVED:")` are live; `__io_putchar` had no
+            definition (weak `extern`→`0x0`), so the first library `printf` in
+            `rbBegin` HardFaulted → spun → IWDG reset ~8 s later (looked exactly
+            like an rbBegin hang). Verified at link level (`nm`/`objdump`:
+            `_write`→`__io_putchar`, pre-fix target `0x0`). Fix:
+            `int __io_putchar(int ch){ uint8_t c=(uint8_t)ch; HAL_UART_Transmit(
+            &huart2,&c,1U,10U); return ch; }` in USER CODE 4. Builds clean.
+            **Bonus:** this *also* turns on the JSPR `SENT:`/`RECEIVED:` trace
+            (visibility) — one edit, both wins. **Next: flash + run → expect
+            `rbBegin OK` + full trace = first contact end-to-end.** (Turn
+            `DEBUG` off before MO segment-timing tests; the trace is per-frame.)
 - [ ] **Step 3** — MO pipeline (raw passthrough, no translation).
 - [ ] **Step 4** — MT pipeline (1:1 text passthrough).
 - [ ] **Step 5** — wrap in ACTU-style text protocol. = POC complete.
@@ -668,15 +670,18 @@ Things worth fixing in the library itself, not just our application:
       0x00 flood) they never exit → hung supervisor (caught 2026-05-30; the
       manager's IWDG now backstops it). Patch: cap the drain (byte-budget or
       time bound).
-- [ ] **Feed the IWDG from inside the `delay()` shim** (crossplatform STM32
-      branch) so a *legitimately slow* `rbBegin` (sum of `waitForJsprMessage`
-      1 s timeouts — see LUX_DEVLOG 2026-05-30 S2-part-5) isn't guillotined
-      mid-handshake. `waitForJsprMessage` calls `delay(10)` each loop and
-      `setApi` calls `delay(5)`, so the dog stays fed through real waiting.
-      **Crucially:** `clearLeftoverData` is a *tight* `serialPeek/serialRead`
-      spin with **no `delay()`**, so the genuine hang above is **still** caught.
-      Do NOT pet inside `serialRead` (that would defeat the hang-catch). This is
-      the surgical robustness fix; the long-term answer is non-blocking comms.
+- [ ] **(HELD — pending evidence) Feed the IWDG from inside the `delay()`
+      shim** (crossplatform STM32 branch). Was proposed (S2-part-5) for a
+      *legitimately slow* `rbBegin`, but **S2-part-6 found the resets were a
+      HardFault on the first DEBUG `printf`, not a slow handshake** — and the
+      `delay()`-feed would NOT have helped that (the fault is a tight
+      `_write`→`__io_putchar` call, and `HardFault_Handler`'s `while(1)` calls
+      no `delay()` either). So this is on hold until the trace run shows whether
+      a genuinely slow handshake even exists. *If* it does: `waitForJsprMessage`
+      calls `delay(10)` and `setApi` `delay(5)`, so feeding the dog there keeps
+      it fed through real waiting, while `clearLeftoverData`'s *tight* spin (no
+      `delay()`) is still caught. Don't pet inside `serialRead`. Don't add the
+      complexity for a problem we may not have.
 - [ ] **`rbSendMessageAny` bool-compare bug** ([rockblock_9704.c:430]).
       `if(queued >= 0)` where `queued` is `bool` → always true; defeats the
       queue-add success check. Sync-API-only (we use async) and bounded by a

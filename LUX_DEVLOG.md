@@ -1644,3 +1644,84 @@ the 8 s watchdog stops mattering. So priority order: **(1) `__io_putchar`
 retarget + `-DDEBUG` trace** (see the 405s); **(2) fix TX integrity** (root
 cause the trace reveals); **(3) IWDG-in-`delay()`** hardening. No code touched
 this session (docs only); diagnosis logged for a clean resume.
+
+### S2 (part 6): it was NEVER a watchdog timeout — it's a HardFault on the first DEBUG `printf` ⭐⭐ (corrects part 5)
+
+Going to wire up the `-DDEBUG` trace, I checked two things and they collided
+into the actual root cause — **verified at the link/disassembly level, not
+guessed:**
+
+1. **`DEBUG` is already defined project-wide.** The CubeIDE *Debug* build config
+   lists `DEBUG` in the C-compiler symbols (`.cproject`: `DEBUG`, `USE_HAL_DRIVER`,
+   `STM32L452xx`, `STM32_HAL`). So jspr.c's `#ifdef DEBUG` →
+   `printf("SENT: …")` / `printf("RECEIVED: …")` (jspr.c:27, 76) were **compiled
+   in and live the whole time.**
+2. **`__io_putchar` has no implementation.** Project-wide it appears exactly
+   once — the weak `extern` stub in `syscalls.c:35`. No strong definition →
+   the symbol resolves to address `0x0`. (Confirmed `consolePrintf` never used
+   `printf`; it does `vsnprintf` + `HAL_UART_Transmit(&huart2)` directly, so the
+   broken `printf` path was simply never exercised — until a library `printf` fired.)
+
+**The mechanism (the "watchdog reset" was a HardFault all along):**
+`rbBegin` → `setApi` → `jsprGetApiVersion` → `sendJspr`, and `sendJspr` does
+`context.serialWrite(cmd)` to the modem **first**, *then* `printf("SENT: …")`.
+So the command reaches the modem (which is why first contact "worked" — the GET
+goes out and the modem even replies), and *immediately after*, `printf` →
+newlib (`_isatty`==1 → line-buffered → flushes on `\n`) → `_write`
+(syscalls.o, weak, **is** the linked one — nosys didn't override it) →
+`__io_putchar(0x0)` → `bl 0x0` → branch to a non-Thumb even address →
+**HardFault** → `HardFault_Handler`'s default `while(1){}` → IWDG never
+refreshed → ~8 s later the watchdog resets us and prints `! WATCHDOG RESET`.
+
+Link-level proof (Debug build, bundled arm-none-eabi 14.3):
+- `nm`: `_write` = weak `T/W` at `0x080020a8` (the syscalls.o one, used);
+  `_write_r` from `libc_nano`; pre-fix `__io_putchar` undefined-weak → `0x0`.
+- `objdump` of `<_write>`: the loop body is literally `__io_putchar(*ptr++)`.
+- So pre-fix the `bl __io_putchar` targeted `0x0`. Post-fix `__io_putchar` is a
+  real function at `0x08001d78`.
+
+**This supersedes the part-5 "slow handshake sums to ~8 s" explanation.** That
+timing math is real (and would bite eventually), but it was *not* the trigger —
+the fault fires on the very first JSPR `printf`, within milliseconds of
+`rbBegin` starting, long before any timeout could accumulate. The 8 s gap we
+saw was just the IWDG period counting down while stuck in the fault loop. It
+*looked* like an rbBegin hang because the symptom (8 s → reset, no `rbBegin`
+output) is identical.
+
+**Fix applied (manager `main.c`, USER CODE 4 — builds clean, text 58128 /
+bss 23028):**
+```c
+int __io_putchar(int ch){ uint8_t c=(uint8_t)ch; HAL_UART_Transmit(&huart2,&c,1U,10U); return ch; }
+```
+This is a **no-regret** change: it removes the fault *and* lights up the JSPR
+`SENT:`/`RECEIVED:` trace we wanted for visibility — one edit does both. Very
+likely this alone gets `rbBegin` to complete (first contact end-to-end). Left
+**uncommitted** per practice (validate on hardware first); the change compiles
+and links with the bundled toolchain, no errors (only pre-existing benign
+"static declared but never defined" header warnings).
+
+**On the IWDG-in-`delay()` hardening (part-5 item #3): held — it would NOT have
+fixed this.** The fault is a tight `_write`→`__io_putchar` call with no
+`delay()`, and once in `HardFault_Handler`'s `while(1)` nothing calls `delay()`
+either, so feeding the dog there changes nothing for this failure. It's still a
+reasonable hardening *if* a genuinely slow handshake turns out to exist — but
+that's now unproven, so it waits until the trace run shows whether `rbBegin`
+ever legitimately runs long. Don't add complexity for a problem we may not have.
+
+**Two real latent issues this exposed (worth fixing regardless):**
+- The Debug build ships `DEBUG` on but no `__io_putchar` — *any* library
+  `printf` (incl. the unconditional kermit ones on the firmware-update path)
+  would HardFault. The retarget closes that for good.
+- `HardFault_Handler` is a silent `while(1)`. Consider a minimal busy-wait UART
+  print (`"!! HARDFAULT"`) before the spin so a future fault is unambiguous
+  instead of masquerading as a watchdog timeout. (Not done now — the retarget
+  removes the only fault we know about; revisit as defensive instrumentation.)
+
+**Resume (post-dinner): build → flash → run startup.** Expected: `rbBegin` runs
+to completion with a full `SENT:`/`RECEIVED:` JSPR trace on the console →
+first contact end-to-end → commit the manager chunk. If it *still* resets, then
+a fault is NOT the (only) cause and we read the trace to see how far `rbBegin`
+gets — but the link-level evidence says the retarget should clear it. NB: with
+`DEBUG` on, the trace also prints every `rbPoll` in RUNNING (great for S1; turn
+`DEBUG` off before MO segment-timing tests where the ~300 ms prompt deadline
+matters).
