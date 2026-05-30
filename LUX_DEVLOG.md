@@ -1538,3 +1538,33 @@ re-init on FAULT, (2) chase the intermittent 405 / TX integrity, (3) DMA RX
 swap, (4) MT echo (needs sky view). Restored `rbBegin` (patient + retry) should
 reach RUNNING on a fresh start by retrying past an occasional 405 — test
 pending.
+
+### S2 (part 3): the patient handshake outruns the 3 s watchdog ⭐ (Liam's catch)
+
+Ran the restored `rbBegin` on a fresh flash: boot-settle OK, then watchdog
+reset — with **no `rbBegin` output at all** (not even a retry log). Liam
+diagnosed it on sight: the now-patient handshake blocks longer than the 3 s
+IWDG.
+
+Math — a single `rbBegin`, when the modem doesn't reply cleanly (405 / silent),
+blocks ~4 s: `setApi` (2-iteration loop × `waitForJsprMessage` 1 s ≈ 2 s) +
+`setSim` (1 s) + `setState` (1 s). The IWDG can't be petted inside a library
+call, so a single `rbBegin` exceeds the 3 s window → reset mid-handshake,
+before the firmware's retry loop can even log attempt 2. (The manual GET probe
+survived because it was one ~1.5 s op under 3 s.) So we never see `rbBegin`
+finish — success or clean-fail — it gets guillotined every time.
+
+**Fix (top of next session): lengthen the IWDG to ~8 s** — CubeMX: prescaler
+64, reload 1500 → 4000 (500 Hz → 8 s), regenerate. The firmware already pets
+the IWDG before each `rbBegin` attempt, so the longest un-petted span is ONE
+`rbBegin` (~4 s); 8 s gives 2× margin. Safety property holds: a true wedge
+still self-recovers (8 s vs 3 s), and a stuck-but-powered modem is idle, not a
+damage state. Then `rbBegin` runs its full patient+retry and we see the real
+outcome. (Longer-term, the clean answer is non-blocking comms / supervisor on
+a timer — the production direction — not an ever-longer watchdog.)
+
+**Revised resume order:** (1) IWDG → ~8 s; (2) `enter_fault` → `uart1_down`
+(fixes FAULT-recycle deafness so we can iterate without reflashing); (3) chase
+intermittent 405 / TX integrity (matters for MO); (4) fix stale "fresh
+power-up" comment in main.c; (5) DMA RX swap; (6) MT echo (sky view). The comms
+path itself is proven (modem answered the manual GET).
