@@ -688,6 +688,17 @@ Things worth fixing in the library itself, not just our application:
       downstream NULL guard, but a real bug. Fix: `if(queued)`. Also remove the
       dead locals in `sendMoFromQueue` (initCrc/segmentStart/segmentLength/
       encodedBytes). (Found via build warnings 2026-05-30.)
+- [ ] **`hwInfo`/`simStatus` accessors each do their own round-trip — add a
+      cached/batch fetch.** `rbGetImei`/`rbGetHwVersion`/`rbGetSerialNumber`/
+      `rbGetBoardTemp` each call `getHwInfo` → a separate `GET hwInfo`, so logging
+      three fields fires three round-trips (seen at first contact: 3× `GET hwInfo`
+      back-to-back). Same shape for `getSimStatus`. Options: cache the last-fetched
+      struct (note `board_temp` goes stale — bound the cache age), or expose a
+      public `rbGetHwInfo(jsprHwInfo_t*)` so a caller fetches once and reads all
+      fields. **Deferred (Liam, 2026-05-31):** not worth risking the upstream
+      examples right now — future improvement. NB: the *correctness* bug (impatient
+      single read → sentinels) IS fixed — see `LUX_LIBRARY_CHANGES.md` §3; this
+      item is only the round-trip redundancy.
 
 ---
 
