@@ -93,6 +93,29 @@ changes upstream behavior — hence this section.
   (restoring the original `if (bytesRead <= 0) { reading = false; break; }`).
   Committed alongside this ledger — `git log --oneline -- src/jspr.c LUX_LIBRARY_CHANGES.md`.
 
+### 3. Patient reads in `getHwInfo` / `getSimStatus` — `src/rockblock_9704.c`
+
+- **What:** replaced the bare single `receiveJspr(&response, "X")` with
+  `waitForJsprMessage(&response, "X", JSPR_RC_NO_ERROR, 1)` in `getHwInfo`
+  (~l.940) and `getSimStatus` (~l.996).
+- **Why:** both fired the `GET` then read the ring **once, immediately** —
+  before the modem had replied — so the accessors (`rbGetImei/HwVersion/
+  SerialNumber/BoardTemp`, `rbGetSimStatus...`) returned sentinels (`?`,
+  `-100 °C`) even though the `200 hwInfo`/`200 simStatus` reply arrived intact a
+  moment later (observed at first contact — `rbBegin OK` line showed
+  `hw=? imei=? temp=-100C` while the trace held the real IMEI/temp). This is a
+  *synchronization* bug, not delivery — same root as `a2f1197`/`rbGetSignal`,
+  which already used the patient call. DMA RX would **not** fix it (the data was
+  never lost, just read too early).
+- **Footgun watch:** same tradeoff as any `waitForJsprMessage` accessor — it can
+  block up to 1 s if the modem never answers, and (existing upstream behavior)
+  it discards non-matching *unsolicited* frames seen while waiting. No worse than
+  `rbGetSignal`, which already does this. Note these accessors still each do
+  their own round-trip; calling three of them (hw+imei+temp) sends three
+  `GET hwInfo`s — harmless but redundant (see manager-side log; a single-fetch
+  tidy is optional).
+- **Revert:** restore the two `receiveJspr(&response, "X")` calls.
+
 ---
 
 ## Known upstream issues we have NOT changed (tracked, not yet patched)

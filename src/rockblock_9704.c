@@ -937,7 +937,11 @@ static bool getHwInfo(jsprHwInfo_t * hwInfo)
 {
     bool populated = false;
     jsprGetHwInfo();
-    receiveJspr(&response, "hwInfo");
+    /* LUX modification (see LUX_LIBRARY_CHANGES.md): wait for the reply instead
+     * of a single immediate read. Upstream's bare receiveJspr() peeks the ring
+     * once, before the modem has replied, so it returns the sentinel even though
+     * the 200 hwInfo arrives intact a moment later. Mirrors rbGetSignal()/a2f1197. */
+    waitForJsprMessage(&response, "hwInfo", JSPR_RC_NO_ERROR, 1);
     if(JSPR_RC_NO_ERROR == response.code && strcmp(response.target, "hwInfo") == 0)
     {
         if(parseJsprGetHwInfo(response.json, hwInfo))
@@ -993,7 +997,9 @@ static bool getSimStatus(jsprSimStatus_t * simStatus)
 {
     bool populated = false;
     jsprGetSimStatus();
-    receiveJspr(&response, "simStatus");
+    /* LUX modification (see LUX_LIBRARY_CHANGES.md): same impatient-read fix as
+     * getHwInfo — wait for the GET simStatus reply rather than peeking once. */
+    waitForJsprMessage(&response, "simStatus", JSPR_RC_NO_ERROR, 1);
     if(JSPR_RC_NO_ERROR == response.code && strcmp(response.target, "simStatus") == 0)
     {
         if(parseJsprGetSimStatus(response.json, simStatus))
