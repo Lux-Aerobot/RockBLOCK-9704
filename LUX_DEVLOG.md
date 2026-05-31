@@ -1824,3 +1824,32 @@ S1 first-contact gate: **DONE.**
    which is correct — the pipeline fires, the antenna just can't see birds).
 4. Stale "fresh power-up" comment in `main.c` (the deafness was the FAULT-recycle
    path, since fixed by `uart1_down`) — tidy when convenient.
+
+### S2 (part 9): hwInfo fix validated; a SIG-line regression, an active-poll, and a deliberate revert
+
+Reflashed with the hwInfo/simStatus patient-read fix → `rbBegin OK: hw=0x0601
+imei=300258060609970 temp=22C` (real values, accessor reads now interleave
+cleanly). hwInfo accessor fix **validated** (task done).
+
+**Side effect Liam caught:** no more `SIG` line in RUNNING. Root cause (a nice
+second-order one): the patient hwInfo reads make `rbBegin` *longer*, so the
+modem's **one-shot** unsolicited `299 constellationState` (fired right after it
+goes active) now lands *inside* `getHwInfo`'s `waitForJsprMessage` loop and is
+**discarded** (the known "sync waits drop unsolicited frames" issue — already in
+TODO/upstream-patch list). With signal flat at 0 indoors the modem never
+re-sends it, so `rbPoll` in RUNNING has nothing → no `SIG` line. Old build's
+shorter `rbBegin` finished before that frame arrived, so it landed in RUNNING.
+Pure timing-boundary shift.
+
+**Tried then reverted:** added an active `rbGetSignal()` poll in RUNNING
+(2 s cadence). Built/worked, but **Liam reverted it** — wants the terminal clean,
+and "updated on unsolicited messages" is the right shape for the application; the
+proper fix (dispatch unsolicited frames during sync waits) is already a TODO
+item. Decision: **let the outdoor test prove the unsolicited path** rather than
+mask it with a poll. `main.c` reverted byte-identical to `c212769`. (Active-poll
+kept only as a possible production option, not now.)
+
+**State:** manager working tree = just the validated hwInfo submodule bump
+(`c50118c→96abe76`), to be committed with the outdoor-test result. Next data
+point: bring the modem to open sky and confirm `SIG bars=…/visible=yes` fires
+via the unsolicited `onConstellationState` callback as signal changes.
