@@ -17,6 +17,16 @@ int messageReference = 1;
 static uint8_t jsprRxBuffer [RX_BUFFER_SIZE];
 extern serialContext context;
 
+/* LUX modification (see LUX_LIBRARY_CHANGES.md). Inter-byte patience for
+ * receiveJspr: bounds how many ~1 ms ticks we wait for the *next* in-flight
+ * byte while mid-frame before giving up. Upstream bailed the instant the ring
+ * ran dry, discarding a reply that was still arriving (head-chopped frames at
+ * 230400). Tunable: ~ms of tolerable mid-frame stall; small enough to stay
+ * effectively non-blocking for rbPoll. */
+#ifndef JSPR_MAX_INTERBYTE_WAITS
+#define JSPR_MAX_INTERBYTE_WAITS 5U
+#endif
+
 int sendJspr(const char *buffer, size_t length)
 {
         int bytesWritten = context.serialWrite(buffer, length);
@@ -39,6 +49,7 @@ bool receiveJspr(jsprResponse_t * response, const char * expectedTarget)
     char resultCode[JSPR_RESULT_CODE_LENGTH + 1]; // Plus 1 for the NULL
     uint16_t pos = 0;
     int bytesRead;
+    uint16_t interByteWaits = 0; /* LUX: see JSPR_MAX_INTERBYTE_WAITS */
     bool validResponse = false;
     bool reading = true;
     bool gotResponse = false;
@@ -59,9 +70,24 @@ bool receiveJspr(jsprResponse_t * response, const char * expectedTarget)
                 bytesRead = context.serialRead(&jsprRxBuffer[pos], 1);
                 if (bytesRead <= 0)
                 {
+                    /* LUX modification (see LUX_LIBRARY_CHANGES.md): the ring can
+                     * run dry mid-frame because the reply is still arriving at
+                     * line rate (esp. 230400). Upstream bailed here and threw
+                     * away the partial, so a reply straddling two polls came back
+                     * head-chopped. While mid-frame (pos>0), wait briefly for the
+                     * next byte and keep assembling THIS frame; only give up once
+                     * truly idle or after a bounded number of waits (stays
+                     * effectively non-blocking). */
+                    if (pos > 0 && interByteWaits < JSPR_MAX_INTERBYTE_WAITS)
+                    {
+                        interByteWaits++;
+                        delay(1);
+                        continue;
+                    }
                     reading = false; //make function non-blocking
                     break;
                 }
+                interByteWaits = 0; /* LUX: got a byte -> reset the patience budget */
                 if (jsprRxBuffer[pos] == '\r' && pos > 2)
                 {
                     jsprRxBuffer[pos] = '\0'; // Replace with NULL
