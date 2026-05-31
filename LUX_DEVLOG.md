@@ -1725,3 +1725,102 @@ gets — but the link-level evidence says the retarget should clear it. NB: with
 `DEBUG` on, the trace also prints every `rbPoll` in RUNNING (great for S1; turn
 `DEBUG` off before MO segment-timing tests where the ~300 ms prompt deadline
 matters).
+
+### S2 (part 7): trace is ALIVE — two real, separate bugs now visible ⭐
+
+The `__io_putchar` retarget worked exactly as predicted: **no more reset-on-
+`rbBegin`-start; we now get a live `SENT:`/`RECEIVED:` trace.** HardFault theory
+confirmed on hardware. What the trace shows (reproducible, two identical runs):
+```
+SENT:     GET apiVersion {}
+RECEIVED: 405 MALFORMED {}                          <- clue 1
+RECEIVED:
+SENT:     GET apiVersion {}
+RECEIVED: ,"patch":0},{"major":1,"minor":6,...}]}   <- clue 2
+```
+(Then setApi fails to match → patient 1 s waits × loop × retries stack toward
+8 s → the *residual* watchdog reset. So part-5's timing math is finally real —
+but only as a **symptom** of the two bugs below, not a cause.)
+
+- **Clue 1 — `405 MALFORMED` on the FIRST command only.** Command bytes are
+  provably correct (`"GET apiVersion {}\r"`, `JSPR_GET_API_LEN`==18, no padding/
+  nulls). First-cmd-garbage / rest-clean is the fingerprint of a **TXD glitch
+  byte at USART1 bring-up**: PA9 is held *low* during boot (interlock), and
+  `uart1_up()` flips it to USART-AF (idle *high*); a receiver watching a
+  held-low line (a break/framing condition) can latch a phantom `0x00` as the
+  line returns to idle, which prefixes our first command → `[0x00]GET…` →
+  malformed. (Inference; fits evidence + the existing "TXD-low 0x00 noise" note.)
+- **Clue 2 — the good reply comes back HEAD-CHOPPED** (`,"patch":0},…` is the
+  tail of `200 apiVersion {"supported_versions":[{…`). We're **dropping RX
+  bytes**: single-byte `HAL_UART_Receive_IT` at 230400 has a re-arm gap; a fast
+  burst overruns it → lost bytes → `\r` framing desyncs → fragment. This is the
+  hard evidence that **DMA RX is required**, not optional.
+
+**On the patient-handshake change (a2f1197):** Liam's instinct was right — it was
+a fix for a problem we don't have. We added it believing rbBegin failed from a
+too-short reply window; the trace proves the modem replies promptly — we were
+HardFaulting before we could read it. Not *wrong* (the 10 ms window is a real
+latent bug, keep it for prod), but currently a **confound**: because the
+handshake genuinely fails, each patient wait burns its full 1 s, which is what
+produces the residual watchdog resets. Fix the two real bugs → modem replies
+clean+fast → patient waits return instantly → patience becomes invisible. Don't
+add/remove patience to chase this.
+
+**Experiment applied (manager `main.c`, uncommitted, builds clean — text
+58336):** parser-sync — after the boot-settle quiet-wait (modem booted &
+listening), send a lone `\r` to terminate any latched partial line, then a
+bounded drain-to-quiet (reuses the existing IWDG-safe loop) before `rbBegin`.
+New log: `parser sync: sent CR, drained N reply bytes`. **Decision tree on
+next run:** (a) 405 gone + whole `200 apiVersion` → first contact; (b) 405 gone
+but reply still fragments → clue 2 is the gate, do DMA RX next; (c) 405 persists
+→ not a latched partial, pivot. Targets clue 1 only — clue 2 (DMA RX) is the
+likely follow-on regardless.
+
+### S2 (part 8): 🎉 FIRST CONTACT — full JSPR handshake, rbBegin OK → RUNNING ⭐⭐⭐
+
+Both fixes landed it. CR-flush confirmed (clue 1): `parser sync: sent CR, drained
+17 reply bytes` every run — and **17 == `"405 MALFORMED {}\r"`**, i.e. the modem
+405s the *throwaway* CR line now instead of our real command. The 405 is gone
+from all three runs (fresh power-up / direct watchdog-recovery / manager-reset).
+Then `receiveJspr` inter-byte patience (clue 2) made the reply arrive **whole**,
+and the entire handshake ran to completion:
+```
+GET/PUT apiVersion   -> 200, negotiated v1.7
+GET/PUT simConfig    -> 200 internal; 299 simStatus card_present, ICCID 8988169771001181297
+GET/PUT operationalState -> inactive -> active
+GET hwInfo           -> 200 hw=0x0601 serial=1a06b7 IMEI=300258060609970 temp=21C
+GET constellationState -> 200 visible:false bars:0
+rbBegin OK -> RUNNING ; then unsolicited 299s + "SIG bars=0 level=2048 visible=no"
+```
+**Liam's observation:** the inter-byte patience did **not** stall `rbPoll` in
+RUNNING (the risk with that change) — unsolicited frames process smoothly. Good
+confirmation the bound is small enough.
+
+**Diagnostic arc that got us here (whole S2):** HardFault-masquerading-as-
+watchdog (null `__io_putchar` under the Debug build's `DEBUG`) → trace lit up →
+two real bugs visible: (1) TXD glitch byte at USART1 bring-up → first command
+`405` (fixed manager-side with a parser-sync `\r` + bounded drain), (2)
+`receiveJspr` discarding in-flight frames → head-chopped replies (fixed in the
+lib with inter-byte patience). The patient-handshake change (a2f1197) was a fix
+for a problem we didn't have — kept it (real latent bug) but it was never the
+blocker. Lesson logged: **get visibility before theorizing about timing.**
+
+**Committed:** manager `c212769` on `main` (first-contact chunk: `__io_putchar`
++ parser-sync `\r` + submodule `40363fd→c50118c` + IWDG ~8s via `.ioc`); library
+`c50118c` on the fork (receiveJspr patience + `LUX_LIBRARY_CHANGES.md` ledger).
+S1 first-contact gate: **DONE.**
+
+**Follow-ups (not blockers, in priority-ish order):**
+1. **hw/imei/temp accessors read impatiently.** `rbBegin OK` line shows
+   `hw=? imei=? temp=-100C` though the `200 hwInfo` data (IMEI 300258060609970,
+   temp 21 C) is right there in the trace. The `rbGetHwVersion/Imei/BoardTemp`
+   accessors each fire their own `GET hwInfo` and read before the reply lands
+   (the 3× `GET hwInfo` + empty `RECEIVED`s). Same family as the patience bug,
+   different call path — likely they don't use `waitForJsprMessage`. Cosmetic;
+   easy follow-up (cache hwInfo during rbBegin, or make the accessors patient).
+2. **DMA-to-IDLE RX** still the planned proper RX path (throughput + robustness
+   for MO segments); patience is a correct stopgap, not a substitute.
+3. **Real signal / MT echo** need **sky view** (bench shows bars=0 visible=no,
+   which is correct — the pipeline fires, the antenna just can't see birds).
+4. Stale "fresh power-up" comment in `main.c` (the deafness was the FAULT-recycle
+   path, since fixed by `uart1_down`) — tidy when convenient.
