@@ -1853,3 +1853,29 @@ kept only as a possible production option, not now.)
 (`c50118c→96abe76`), to be committed with the outdoor-test result. Next data
 point: bring the modem to open sky and confirm `SIG bars=…/visible=yes` fires
 via the unsolicited `onConstellationState` callback as signal changes.
+
+### S2 (part 10): unsolicited signal path CONFIRMED — live satellite transit, antenna flat on the desk ⭐
+
+Didn't even need to go outside. With the (no-poll) build sitting on the bench,
+the modem volunteered unsolicited `299 constellationState` frames as a bird
+transited:
+```
+299 constellationState {"constellation_visible":true,"signal_bars":0,"signal_level":-117}
+[703541] SIG bars=0 level=-117 visible=yes      <- satellite in view
+299 constellationState {"constellation_visible":false,"signal_bars":0}
+[721348] SIG bars=0 level=-117 visible=no        <- ~18 s later, passed
+```
+**Both halves of part 9's theory proven:** (1) the unsolicited path works with
+zero polling — frame → `rbPoll` → `onConstellationState` → SIG line; (2) the
+earlier RUNNING silence was simply "no change to report" (the one-shot at-active
+frame having been consumed in `rbBegin`). The revert was correct; event-driven is
+the right shape. Interpretation: `visible=yes` + `bars=0` + `level=-117 dBm` =
+detected an Iridium downlink but link too weak for a bar (flat desk antenna,
+indoors). Iridium's 66-bird LEO swarm means even a bad antenna catches brief
+zenith transits. Open-sky view → stronger `level` → real `bars`. Tracking
+pipeline end-to-end alive.
+
+**Committed the validated S1 baseline:** manager submodule bump to the fork
+(hwInfo/simStatus patient reads + receiveJspr patience + parser-sync + first
+contact). S1 signal-status sub-goal: **proven.** Remaining S1: MT echo (needs an
+actual inbound message — sky view + ground send) and the DMA-to-IDLE RX swap.
