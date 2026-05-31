@@ -1879,3 +1879,33 @@ pipeline end-to-end alive.
 (hwInfo/simStatus patient reads + receiveJspr patience + parser-sync + first
 contact). S1 signal-status sub-goal: **proven.** Remaining S1: MT echo (needs an
 actual inbound message — sky view + ground send) and the DMA-to-IDLE RX swap.
+
+### S2 (part 11): 🛰️ S1 FUNCTIONALLY COMPLETE — real signal bars + MT "Hello Lux" round-trip + clean shutdown (open-sky test) ⭐⭐⭐
+
+Took the rig outside (deck, open sky, racing a thunderstorm) on the committed
+baseline (`dcd5e54` / `a0a1114`) — **no code change**, just sky. Everything S1
+needs lit up at once:
+
+- **Real signal, unsolicited.** Bars climbed live as Iridium birds passed:
+  `bars = 2 / 3 / 5 / 3 / 2 / 1`, `level` −113…−118 dBm, `visible=yes` — all
+  from unsolicited `299 constellationState` → `onConstellationState`, **peak 5
+  bars.** The event-driven signal path (the one we kept after reverting the
+  active poll) is fully validated in open sky.
+- **MT receive + decode + echo — "Hello Lux" round-tripped ground→device.** Sent
+  a 9-byte MT from Cloudloop (topic 244, msg 21). Full IMT receive path ran:
+  `messageTerminate` → `messageTerminateSegment` (base64) →
+  `messageTerminateStatus: complete` → `onMtComplete(id=21, OK)` → echo
+  `MT 9 bytes: Hello Lux`. **Cloudloop console confirms the other end:** Encoded
+  → Sent (17:18:11 UTC) → Delivered (17:18:44) → Delivery Success, 9 B, Dir MT.
+  Segment reassembly + base64 decode + completion callback all working.
+- **Clean shutdown on the live modem.** `button → USART1 down → I_EN low →
+  I_BTD LOW after 40 ms → power gate OFF → IDLE`. Damage-interlock shutdown
+  sequence validated against the real 9704 (startup was already proven). Both
+  ends of the power lifecycle now real-hardware-clean.
+
+**S1 functional set complete:** first contact + identity + real signal + MT echo
++ clean power-down, all on real hardware over the hand-wired 16-pin link. The
+only remaining S1 item is the **DMA-to-IDLE RX** swap — an architecture/robustness
+improvement, not a functional gap (the `receiveJspr` inter-byte patience is the
+correct stopgap). **Next: S2 — MO (outbound) pipeline → ACTU-style inter-MCU
+protocol.** Validated the committed baseline; nothing to commit for this run.
