@@ -72,8 +72,24 @@ steps 2+. See `LUX_DEVLOG.md` 2026-05-28 for the plan and rationale.
             (visibility) — one edit, both wins. **Next: flash + run → expect
             `rbBegin OK` + full trace = first contact end-to-end.** (Turn
             `DEBUG` off before MO segment-timing tests; the trace is per-frame.)
-- [ ] **Step 3** — MO pipeline (raw passthrough, no translation).
-- [ ] **Step 4** — MT pipeline (1:1 text passthrough).
+- [~] **Steps 3+4** — transparent Core<->modem passthrough (raw, no translation).
+      Code-complete in the manager `main.c` (uncommitted; pending the CubeMX
+      USART3 add + hardware validation). Dedicated Core link = **USART3**
+      (separate from the USART2 debug console), single-byte IT RX into a ring.
+      - MO (step 3): Core-link RX accumulated until `\n`; trailing CR/LF
+        stripped (kept off-air — Iridium is billed per byte); payload handed to
+        `rbSendMessageAsync(RAW_TOPIC, ...)`, drained by `rbPoll`.
+      - MT (step 4): `mtMessageComplete` -> `rbReceiveMessageAsync` -> payload
+        written verbatim out USART3 + `\r\n`, then `rbAcknowledgeReceiveHeadAsync`.
+      - Core link is independent of the modem interlock (always up); lines that
+        arrive outside RUNNING are discarded (no modem to send to).
+      - **CubeMX step required before build:** add USART3 async 115200 8N1
+        (e.g. PC10 TX / PC11 RX), auto-init (NOT deferred like USART1), enable
+        the USART3 global interrupt. See `main.c` header comment.
+      - Known bound: MT relay is a blocking `HAL_UART_Transmit` inside the
+        `rbPoll` callback (fine for the tiny <50 B command/RSP payloads; revisit
+        if large MTs ever interleave with an in-flight MO segment exchange).
+      - See `LUX_DEVLOG.md` 2026-06-16.
 - [ ] **Step 5** — wrap in ACTU-style text protocol. = POC complete.
 
 ## Bring-up — outstanding

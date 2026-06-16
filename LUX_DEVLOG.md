@@ -1909,3 +1909,75 @@ only remaining S1 item is the **DMA-to-IDLE RX** swap — an architecture/robust
 improvement, not a functional gap (the `receiveJspr` inter-byte patience is the
 correct stopgap). **Next: S2 — MO (outbound) pipeline → ACTU-style inter-MCU
 protocol.** Validated the committed baseline; nothing to commit for this run.
+
+---
+
+## 2026-06-16 — Steps 3+4: transparent Core<->modem passthrough (code-complete)
+
+Implemented the Core <-> modem passthrough in the manager `main.c` — POC steps
+3 (MO pipeline) and 4 (MT pipeline) in one pass, since they share the link
+plumbing. **Deliberately raw / no translation**: the manager is a dumb relay at
+this layer. Per the CORE MESSAGE DEFINITIONS page, Core traffic is line-oriented
+ASCII (`TYPE;SEQ;PAYLOAD\r\n`) and RSP messages are explicitly "forwarded as-is
+via … modem manager" — so a line in = one MO, one MT = one line out. The
+`TYPE/SEQ`-aware routing and ACTU framing stay deferred to Step 5.
+
+**NOT yet hardware-validated** — written away from the bench (Liam in MTL this
+week, no bench supply). Code-complete and committed so it's not lost; the
+validation run waits until bench access is back. The S1 set above remains the
+last thing proven on real hardware.
+
+### Design
+
+- **Dedicated Core link = USART3**, kept separate from the USART2 debug console
+  so passthrough data never mixes with logs or the JSPR `DEBUG` trace. This also
+  matches production (the Core<->manager link is a distinct UART from the modem
+  link). In bring-up a USB-UART adapter on USART3 stands in for the Core/L4.
+- **RX transport = single-byte IT into a power-of-two ring** (`CORE_RX_RING_SIZE`
+  512), drained in the super-loop by `core_link_service()`. Matches the JC-sync
+  decision (Core link interrupt near-term, tiny frames; DMA on the L4 side later).
+  `HAL_UART_RxCpltCallback` now branches: `huart3` -> our ring, `huart1` -> the
+  library (it filters by handle anyway, but the branch is explicit).
+- **MO (step 3):** accumulate Core RX until `\n`, strip a trailing CR so the
+  CRLF stays **off-air** (Iridium is billed per byte), and hand the payload to
+  `rbSendMessageAsync(RAW_TOPIC, …)` — async only, never the sync API (the
+  timeout-isn't-cancel footgun). `rbPoll` does the segment exchange. Empty lines
+  ignored; oversize lines (> `CORE_LINE_MAX` 1024) drained-and-dropped with a log.
+- **MT (step 4):** rewrote the old `echo_mt` (console sanitize) into
+  `relay_mt_to_core` — writes the MT payload **verbatim** out USART3, appends
+  `\r\n` (mirrors the terminator stripped on the MO side), keeps a sanitized
+  preview on the debug console only, then acks the queue head.
+- **Lifecycle:** the Core link is independent of the modem interlock — brought
+  up once at boot and never torn down. Lines arriving outside RUNNING are
+  discarded (no modem to send to, and so no stale backlog queues for next boot).
+
+### Decisions (Liam, this session)
+
+Confirmed up front: dedicated UART (not VCP reuse); strip-and-re-add the
+terminator (off-air payload only); `RAW_TOPIC` (244) for all passthrough MOs
+(single topic — per-type routing is translation = Step 5).
+
+### Required CubeMX step before this builds
+
+`main.c` now references `huart3`. Add USART3 in CubeMX: Asynchronous, 115200
+8N1, free pins (suggest **PC10 TX / PC11 RX** — PC0–3 are the modem control
+pins), **auto-init** (do NOT defer like USART1 — the Core link has no
+boot-sequencing constraint), and **enable the USART3 global interrupt** (NVIC)
+for IT RX. Regenerate; `MX_USART3_UART_Init()` is then auto-called and
+`core_link_start()` (USER CODE 2) arms the receive.
+
+### Known bounds / follow-ups
+
+- MT relay is a blocking `HAL_UART_Transmit` inside the `rbPoll` callback. Fine
+  for the <50 B command/RSP payloads in scope; revisit if a large MT ever
+  interleaves with an in-flight MO segment exchange (the ~300 ms prompt deadline).
+- **Turn the build `DEBUG` symbol OFF for MO segment-timing tests** — the
+  per-frame JSPR `printf` trace on USART2 can eat into the segment deadline.
+- Validation plan: USART3 adapter in a terminal; type a `\n`-terminated line ->
+  expect `MO queued … <- core` then (sky view) a real send; ground-send an MT ->
+  expect the verbatim payload + CRLF back on the adapter. Needs sky view for a
+  live round-trip; the queue/relay plumbing can be exercised on the bench
+  (rejections, framing) without it.
+
+State: **code-complete, committed, not yet hardware-validated** (pending the
+CubeMX USART3 add). No library changes this session — manager `main.c` only.
