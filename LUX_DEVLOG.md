@@ -1981,3 +1981,64 @@ for IT RX. Regenerate; `MX_USART3_UART_Init()` is then auto-called and
 
 State: **code-complete, committed, not yet hardware-validated** (pending the
 CubeMX USART3 add). No library changes this session — manager `main.c` only.
+
+---
+
+## 2026-06-22 — Steps 3+4 VALIDATED on the bench: MO round-trip "HELLO LUX" delivered over-air ⭐⭐⭐
+
+USART3 added in CubeMX (auto-init, NVIC IRQ, PC10/PC11), the manager builds clean
+in both Debug and Release (see the `.cproject` Release-config fix below), and the
+passthrough is now hardware-validated on the new full-system bench.
+
+**🛰️ MO (step 3) — FULL ROUND-TRIP, over-air.** Typed `HELLO LUX` into the Core
+link (USART3, PuTTY) in RUNNING; the **CR/LF line trigger fired it on plain Enter**
+(the line-completeness change works). Path:
+```
+MO queued 9 B (topic 244) <- core
+GET messageProvisioning -> 244=RAW provisioned (+ 313–317 Cloudloop colour topics)
+PUT messageOriginate -> 200 message_accepted, message_id 1
+299 messageOriginateSegment -> PUT segment (base64 "SEVMTE8gTFVYJ5g=") -> 200
+...(waited; a satellite came into a good pass: bars 1->3->5, level -112/-113)...
+299 messageOriginateStatus final_mo_status: mo_ack_received
+MO complete id=1 status=OK
+```
+**Cloudloop confirms:** MO ↑, 9 B, IMT/Certus, payload `48454C4C4F204C5558` =
+"HELLO LUX". The 9-B line became an 11-B IMT message (9 payload + **2-B CRC-16**;
+gateway validated `crcError:false` and stripped the CRC, delivering the clean 9 B).
+**Bonus:** decoded IMT carried GNSS — `lat 45.398, lon -75.6546, alt 7` (Gatineau);
+the 9704 stamps position into the message. Happened **indoors on a transient pass**
+— didn't need to go outside. Step 3 MO functionally complete, end-to-end.
+
+**Queue-full rejection validated (the designed graceful path).** With MO #1 still
+in-flight (held by the modem, no usable link yet) a second send →
+`rbSendMessageAsync` false → `MO REJECTED N B <- core (queue full / not
+provisioned?)`. Provisioning is ruled out (244 came back provisioned), so it's
+purely queue-full; the dual-hedge wording is the library's **no-reason-code**
+limitation (already an upstream-TODO — refine manager-side by tracking queue depth).
+
+**Queue lifecycle (Liam's observations):**
+1. The MO queue clears on a **power-cycle** shutdown→startup.
+2. It **also clears after a bring-down *without* a modem power cycle** → the MO
+   queue is **manager-side software state** (the library's `imtQueue`, re-init'd by
+   `imtQueueInit()` inside `rbBegin`), not modem-resident. So a jammed queue is
+   recoverable by restarting the link — no modem power cycle needed.
+   **Caveat:** clearing the software queue while the modem genuinely holds an
+   in-flight message would **orphan** it (the `299 messageOriginateStatus` later
+   has no queue entry to bind → `moMessageComplete` never fires). Harmless on the
+   bench; the production **MO-outbox-on-Core** design (+ idempotency / SD logging)
+   must own retry so a re-init can't silently drop a real in-flight message.
+
+**`.cproject` Release-config fix.** The library setup (include paths, `STM32_HAL`,
+the source-exclusion entry) lived only in the Debug config; Release failed at
+`rockblock_9704.h: No such file`. Mirrored all three into the Release block
+(verified: XML well-formed + `main.c`/`jspr.c`/`rockblock_9704.c` compile under the
+Release flag set — `-Os`, `DEBUG` **off**). Release is now the natural DEBUG-off
+config for MO segment-timing.
+
+**Manager working tree (validated, pending commit):** CubeMX USART3 add
+(`main.c` + `stm32l4xx_it.{c,h}` + `stm32l4xx_hal_msp.c` + `.ioc`), the CR/LF line
+trigger, and the `.cproject` Release fix. **Next (tomorrow, outdoor):** flash the
+mainline **Core** firmware, wire both boards, prove Step 4 (MT relay → Core link) +
+a real Core-handed telemetry MO, both loops under open sky. (Sequence the modem to
+RUNNING *before* the Core hands over telem — out-of-RUNNING Core lines are discarded
+by design.)
