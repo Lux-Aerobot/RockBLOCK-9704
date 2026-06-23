@@ -2166,3 +2166,35 @@ MO delivered; the 1st was yesterday's 9-B "HELLO LUX".)
 Its specific job — surviving a **modem-only restart without an MCU reset** — needs:
 flash the fix → button shutdown → button startup → confirm an MO sends on the **2nd**
 RUNNING with no power-cycle. That's the one box this run does not tick.
+
+---
+
+## 2026-06-23 — ✅ `moQueuedMessages` fix FLASHED + VALIDATED on hardware (across-restart MO)
+
+Flashed the fix (manager build pulling submodule `1b1e32e`) and ran the exact
+failure case from the bug entry above. **Result: fixed — two clean
+`PUT messageOriginate`s across a modem restart with no board reset.**
+
+Trace (one continuous MCU power session — uptime runs 80 s → 168 s → 181 s → 188 s
+→ 192 s, never resets to 0):
+- **1st RUNNING (~80 s):** MO#1 sent for real — `PUT messageOriginate
+  request_reference:1` → `200 message_accepted (message_id 1)` → `MO queued 99 B` →
+  `299/PUT/200 messageOriginateSegment`. A 2nd Core line then `MO REJECTED (queue
+  full)` (MO#1 still in flight, `sig=0` — the expected graceful path). **MO#1 never
+  completed** (no pass before shutdown), so `moQueuedMessages` was left at **1** —
+  the precise stale precondition the bug needs.
+- **Button shutdown → startup** (full modem power-gate cycle, MCU stays up):
+  `USART1 down → I_EN low → I_BTD low after 34 ms → power gate OFF → IDLE`, then
+  `power gate ON → I_EN high → I_BTD high after 930 ms → USART1 up → boot settle
+  (drained 168 B) → parser sync (drained 17 B)` → full fresh rbBegin handshake →
+  **2nd RUNNING (~192 s, no board reset).**
+- **2nd RUNNING:** `PUT messageOriginate request_reference:2` → `200
+  message_accepted` → `MO queued 100 B` → segment exchange. **Pre-fix this was "MO
+  queued" with no JSPR then perpetual queue-full rejects; now it's a real send.**
+
+`imtQueueInit` zeroing `moQueuedMessages` (fork `1b1e32e`, ledger #4) closes the
+jam — **bug closed.** Both MOs were still in flight awaiting a pass at the end of the
+trace (signal climbing, bars 0, `visible:yes`); over-air completion is signal-bound,
+not a firmware question. **Next:** commit the Core `feature/iridium-comms` branch
+(loop now validated end-to-end), then the deferred design items (telem seq
+mirror-vs-increment; RES>TEL priority + backpressure) with Nick.
