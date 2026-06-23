@@ -2130,3 +2130,39 @@ counter was always 0. It only surfaced once we exercised a **restart-then-send**
 which is exactly what the two-board steady-telemetry loop does. Validates keeping
 `DEBUG` trace on for these — the *absence* of `SENT:` next to "MO queued" is what
 cracked it.
+
+---
+
+## 2026-06-23 — ⭐⭐⭐ First two-board telemetry MO end-to-end: Core → manager → Iridium → Cloudloop → DB
+
+Full telemetry uplink validated over the two-board bench — the Core handing a `TEL`
+line to the manager (USART1↔USART3), the manager queuing it as an MO, and it landing
+in the database via Cloudloop. **On pre-fix firmware** (a fresh MCU boot, while we
+were committing the `moQueuedMessages` fix — that fix is *not* flashed here; see the
+prior entry). So this proves the **steady-telemetry path**, including the
+drain→next-MO cycle that had never been exercised over-air.
+
+**Manager (PuTTY/COM7):** a satellite pass came in (bars climbed 1→5, level ~−113),
+MO #1 went up — `299 messageOriginateStatus final_mo_status: mo_ack_received` →
+`MO complete id=1 status=OK`. The queue drained → `moQueuedMessages` back to 0 → the
+**next** Core line took the real send branch:
+`PUT messageOriginate … request_reference:2` → `200 … message_id:2 message_accepted`
+→ `MO queued 103 B` → `299/PUT/200 messageOriginateSegment` (105 B base64). **That
+`id=1 OK → id=2 sent` cycle is the steady-telemetry drain→next path — first time
+proven over-air** (single-MO runs before this never reached it).
+
+**Cloudloop:** new MO, **23 Jun 17:27, 103 B, IMT/Certus, `crcError:false`** (CRC-16
+round-tripped clean; 105 B on-air = 103 payload + 2-B CRC). Decoded payload
+`TEL;1186;1;1;5940;0;0;…;0` — the Core's semicolon `TEL` format carrying the
+**global sequence number (1186 — mirrored from the companion counter, not a separate
+Iridium seq)**; mostly zeros (bench, no live sensor/actuator data). GNSS auto-stamped
+by the 9704: `lat 45.3947, lon −75.6509, alt 7` (Gatineau). **Delivered to BOTH
+destinations** — Cloudloop Data *and* Lux Telemetry Test DB. It's in the DB: the
+complete pipe **Core → manager → modem → Iridium → Cloudloop → DB** is live. (2nd-ever
+MO delivered; the 1st was yesterday's 9-B "HELLO LUX".)
+
+**Still NOT proven (next bench step, Liam):** the `moQueuedMessages` reset fix (fork
+`1b1e32e`, manager submodule bump `4fc4de5`) was committed but predates this firmware.
+Its specific job — surviving a **modem-only restart without an MCU reset** — needs:
+flash the fix → button shutdown → button startup → confirm an MO sends on the **2nd**
+RUNNING with no power-cycle. That's the one box this run does not tick.
