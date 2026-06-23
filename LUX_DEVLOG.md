@@ -2042,3 +2042,42 @@ mainline **Core** firmware, wire both boards, prove Step 4 (MT relay → Core li
 a real Core-handed telemetry MO, both loops under open sky. (Sequence the modem to
 RUNNING *before* the Core hands over telem — out-of-RUNNING Core lines are discarded
 by design.)
+
+---
+
+## 2026-06-23 — Core-side Iridium comms wired (lux-node-core, `feature/iridium-comms`)
+
+Brought the **Core's** Iridium/manager link online so the Node Core can push
+telemetry to the modem-manager and receive MT. This work is in the
+**`lux-node-core`** repo (branch `feature/iridium-comms`), not the manager/fork —
+logged here because it's the other half of the Core↔manager↔Iridium chain.
+
+**UART reorg (Liam + CubeMX):** console→USART2 (VCP/USB), Iridium/manager→USART1
+(PA9/PA10), companion→LPUART1 (newly exposed 5th port), venter/ballaster unchanged.
+Two-board wiring: Core PA9→manager PC5, manager PC4→Core PA10, GND, 115200 8N1.
+
+**Iridium RX — interrupt, not DMA (deliberate).** The companion was *polled*
+(`HAL_UART_Receive` timeout 0 — drops bytes if the loop stalls); the new Iridium
+link uses single-byte IT into a 256 B ring, drained in the super-loop into
+`handle_external_rx_byte` (the same line-assembler/dispatcher the companion uses).
+The ISR only buffers + re-arms — command dispatch stays in the loop, mirroring the
+actuator pattern. DMA deferred: overkill for line-oriented command/MT at 115200;
+reserve it for bulk/deadline streams (the modem-side JSPR RX if the 9704 ever moves
+onto the Core). Matches the JC-sync call (interrupt near-term, DMA-capable later).
+
+**Iridium TX:** `send_iridium()` helper; enabled the `CMD_CHANNEL_IRIDIUM` case in
+`send_line_channel` (RES to an MT-borne command goes back out the modem);
+`send_telemetry_iridium()` (same `TEL;…` semicolon format) on a new
+`iridium_telemetry_interval_s` (default 300 s), gated like the companion telem block.
+
+**Global sequence number (Nick/Liam decision, applied):** Iridium telem tags with
+the global `last_telemetry_seq` (**mirror** — re-sends the latest companion seq, no
+increment), leaving the companion counter untouched. The increment-vs-mirror call,
+plus **RES>TEL priority** and **Core→manager backpressure**, are flagged as open
+questions in `LUX_INTEGRATION_TODO.md` for the Nick/Liam session.
+
+Companion + actuators deliberately untouched. Builds clean (Debug; text ~92.7 KB).
+**Uncommitted** on `feature/iridium-comms` — validate on the two-board bench first;
+the untracked `Core/Src/lux-node-companion.code-workspace` is a stray, don't commit
+it. **Next:** two-board bench test (companion + Iridium loops), then commit the
+branch.

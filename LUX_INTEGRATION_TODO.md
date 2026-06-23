@@ -302,6 +302,43 @@ Surface this in the integration design session before writing
 arbitration code — the answer shapes both the library wrapper and
 the companion protocol.
 
+### Telemetry sequence numbering: mirror vs increment on the Iridium link — open (2026-06-23)
+
+Decided (Nick/Liam, weeks ago): telemetry uses a **single global sequence
+number**, not per-link counters. Surfaced bringing the Iridium telem online —
+since the companion link is always faster than Iridium, should the Iridium send
+**mirror** the latest global seq (re-send the newest number, no increment) or
+**increment** the shared counter on every Iridium send too?
+
+- *Mirror* (implemented now): tags with `last_telemetry_seq`, doesn't advance →
+  a satellite copy correlates to a specific companion line, no gaps in the
+  companion stream. Simpler.
+- *Increment*: the satellite stream becomes independently gap-detectable (ground
+  can tell it missed sat-telem N without the companion stream as reference), at
+  the cost of interleaving the counter across links.
+
+Irrelevant to current bring-up (the mirror is in place and non-interfering).
+Decide alongside the priority question below.
+
+### RES vs TEL priority, and Core→manager backpressure — open (2026-06-23)
+
+Two coupled decisions surfaced wiring the Core→manager telemetry path:
+
+1. **RES should preempt TEL.** A command response means the ground is waiting;
+   telemetry is periodic and supersedable. Likely lives in the **manager** (it
+   owns the MO queue and sees the modem's real capacity — the Core shouldn't have
+   to). Shape: a small priority queue, RES ahead of TEL, TEL the rolling/droppable
+   class. Direct extension of the "MO queueing policy" question above (per-class:
+   RES = never-drop, TEL = rolling-supersede).
+2. **Backpressure.** The Core currently fires telem *blind* — every
+   `iridium_telemetry_interval_s`, regardless of the manager's queue state; a full
+   queue drops it (the observed `MO REJECTED`) and the Core never learns. Fine at
+   the 300 s test cadence. Real fix: MO-outbox-on-Core (Core holds the backlog,
+   feeds the manager only when it has room) and/or a manager→Core accepted/full
+   signal — part of the Step-5 ACTU ACK/ERR framing.
+
+For the Nick/Liam design session.
+
 ### MT acknowledgement timing: when is an inbound command "done"?
 
 `rbAcknowledgeReceiveHeadAsync()` removes the head of the MT queue,
