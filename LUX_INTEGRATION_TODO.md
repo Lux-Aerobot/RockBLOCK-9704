@@ -4,12 +4,14 @@ Working notes for integrating the RockBLOCK-9704 library into the Lux node
 firmware. Lives next to the upstream README so it travels with the submodule;
 keep it Lux-specific so we can rebase the submodule cleanly.
 
-**Architecture (locked 2026-05-27):** two-MCU split. A dedicated L0-class
-STM32 owns the 9704 modem. The L4 (STM32L452) main avionics MCU talks to
-the L0 over a UART link as a client of an L0-side message API modelled on
-the ACTU SS protocol. EO companion deferred to a future HW revision; will
-re-enter as a second client of the same L4-side API (likely routed through
-L4 rather than direct to L0).
+**Architecture (locked 2026-05-27; manager MCU = L4, decided 2026-06-23):**
+two-MCU split. A dedicated **second L4** (the modem manager) owns the 9704 modem —
+**not an L0**. The manager will be another L4-class part (L452 baseline, matching the
+Core), which comfortably absorbs the library's ~18 KB RAM floor and removes the L0
+SRAM-fit constraint entirely (see "Manager MCU part — RESOLVED" below). The main
+avionics L4 (STM32L452) "Node Core" talks to the manager over a UART link as a client
+of a manager-side message API modelled on the ACTU SS protocol. EO companion deferred
+to a future HW revision; re-enters as a second client of the same Core-side API.
 
 **Refinements (JC sync, 2026-05-29):** the manager goes on **its own board**
 this run — two boards (manager + core). Consolidating modem ownership onto
@@ -22,8 +24,8 @@ pins + the link ("no modem without the manager"). See LUX_DEVLOG 2026-05-29.
 See `LUX_DEVLOG.md` 2026-05-27 entry for full decision context and the
 protocol design sketch.
 
-Bring-up dev hardware: Nucleo-L452RE. Production split: L0 (TBD part) +
-STM32L452VCT6. Bare-metal, HAL drivers, super-loop.
+Bring-up dev hardware: Nucleo-L452RE. Production split: manager L4 (part TBD,
+L452-class) + STM32L452VCT6 Core. Bare-metal, HAL drivers, super-loop.
 
 ---
 
@@ -243,6 +245,23 @@ Things we've identified but haven't decided on. Each needs a
 conversation before it becomes a concrete TODO. Don't implement
 without discussion.
 
+### Near-term feature sequence (integration frontier, set 2026-06-23)
+
+The order we're driving the Core↔manager integration, post restart-jam-fix. Each
+expands in a section below; this is just the priority spine:
+
+1. **RES/TEL queue policy + backpressure** — RES preempts TEL; TEL rolling/droppable.
+   Validate MT→CMD→MO→RES under clear sky. (→ *RES vs TEL priority*.)
+2. **Periodic manager→Core status feed** — manager pushes signal/modem-state; Core
+   folds it into telemetry + logs it. (→ *Manager→Core status feed*.)
+3. **Core→manager command surface** — power on/off/cycle modem, get-status,
+   queue-and-prioritize-this-message. (→ *L0 ↔ L4 protocol design*: power-control
+   commands + v0.1 set + L4-side outbox.)
+4. **Per-channel telemetry config** — channel-arg SET_INTERVAL onto per-channel
+   structs (LoRa-ready). (→ *Per-channel telemetry intervals*.)
+
+Below is the fuller backlog these draw from.
+
 ### MO queueing policy: what happens when new data arrives mid-flight?
 
 When `rbSendMessageAsync` is called while a previous MO is still in
@@ -373,6 +392,26 @@ Dovetails with the two questions above — the per-channel struct is the obvious
 for the per-link seq policy (mirror-vs-increment) and the per-class priority
 (RES-never-drop / TEL-rolling). Defer; do alongside Step 5 / the Nick session.
 
+### Manager→Core status feed: periodic state push for telemetry + logging — open (2026-06-23)
+
+The manager owns the live modem/link state (signal bars + dBm, constellation visible,
+registered/provisioned, operational state, modem up/fault, board temp), but the Core
+has none of it — its TEL frames carry zeros for those fields. Feature: the manager
+**periodically pushes its status to the Core** (and on significant change); the Core
+folds it into its telemetry struct so those fields are both **logged** and **carried
+in TEL** (companion + Iridium).
+
+- Overlaps the v0.1 `STAT,…,STATE` (periodic) and `EVT,…,SIG` (signal-change) message
+  types below — this is the concrete consumer that gives them a purpose.
+- Cadence: slow periodic STAT + event-driven SIG on bar/visibility change (mirrors the
+  unsolicited-driven signal logging already proven on the manager).
+- Decide which fields the Core mirrors-into-TEL vs logs-only, and whether stale manager
+  status (link down) blanks the fields or holds last-known + an age flag.
+- Pairs with the per-channel structs — manager-sourced fields are just more
+  telemetry-struct slices, like GNSS / sensor / actuator.
+
+Feature #2 of the near-term sequence. Part of Step-5 ACTU framing / the Nick session.
+
 ### MT acknowledgement timing: when is an inbound command "done"?
 
 `rbAcknowledgeReceiveHeadAsync()` removes the head of the MT queue,
@@ -502,7 +541,18 @@ Sub-questions:
 - How do we report power-state transitions to ground for
   observability?
 
-### L0 part selection
+### Manager MCU part — RESOLVED (2026-06-23): another L4, not an L0
+
+**Decision: the modem manager will be a second L4-class STM32 (L452 baseline, to match
+the Core), not an L0.** The ~18 KB library RAM floor that drove the entire L0-fit
+analysis below is trivial on an L4 (L452 = 160 KB SRAM), so the SRAM constraint, the
+`IMT_PAYLOAD_SIZE`/queue-size RAM-tuning pressure, and the USB-host-vs-channel-count
+part juggling all fall away — and the manager reuses the Core's L452 HAL/CubeMX
+toolchain. The L0 analysis below is retained for the record only.
+
+---
+
+#### (historical) L0 part-selection analysis
 
 The library's fixed buffer cost is ~17 KB before any user buffers:
 
