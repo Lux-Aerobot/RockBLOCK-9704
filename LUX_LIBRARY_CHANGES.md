@@ -7,9 +7,11 @@ the same commit.**
 
 - Upstream remote: `upstream` = `rock7/RockBLOCK-9704`; our fork branch:
   `lux/stm32-l452-port`.
-- Authoritative diff at any time: `git log --oneline upstream/main..HEAD` and
-  `git diff upstream/main..HEAD -- src/`. This file is the *human* summary of
-  that diff — the git history is the source of truth.
+- Authoritative diff at any time: `git log --oneline upstream/master..HEAD` and
+  `git diff upstream/master..HEAD -- src/`. This file is the *human* summary of
+  that diff — the git history is the source of truth. (Upstream's default branch
+  is `master`. Fork synced with upstream through `a1f4fb9` (#68, async cancel API)
+  via merge `9753c27`, 2026-06-23 — the diff command still shows only *our* changes.)
 - This ledger covers **library code only**. Manager-firmware changes (the
   `__io_putchar` retarget, the parser-sync `\r`, the GPIO/interlock state
   machine, etc.) live in the modem-manager project and `LUX_DEVLOG.md`.

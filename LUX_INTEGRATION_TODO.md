@@ -282,6 +282,20 @@ There is no public cancel-in-flight API, despite the modem reporting
 `MESSAGE_CANCELLED_*` final statuses ([jspr.h:216](src/jspr.h:216))
 that imply it supports being told to abort.
 
+**UPDATE 2026-06-23 — upstream #68 merged into the fork (`a1f4fb9`, merge `9753c27`):**
+the cancel API now exists and is **async-validated**. `sendMoFromQueueAsync` fires a new
+`moMessageStarted(id)` callback once the modem accepts the MO (**async path only** — the
+sync sender does not get it), and `rbCancelMessage(topic, id)` emits the
+`messageOriginateStatus` "cancel" command for that id. Clean supersede is now a library
+primitive: async-send TEL → stash `(topic, id)` from `moMessageStarted` →
+`rbCancelMessage` when a RES must preempt → the modem's `MESSAGE_CANCELLED_*` status
+returns via `rbPoll` → `moMessageComplete` frees the slot (and decrements
+`moQueuedMessages`, composing with our reset fix). **This retires the
+"add `rbCancelMessageAsync`?" sub-question below** — it's the intended RES/TEL supersede
+mechanism. Timing caveat: cancel completes *asynchronously* — the slot frees when the
+cancelled-status returns, not at the `rbCancelMessage` call; factor that into the
+priority-queue design.
+
 **The question:** for our use cases, what policy do we want per
 message class?
 
