@@ -339,6 +339,29 @@ Two coupled decisions surfaced wiring the Core→manager telemetry path:
 
 For the Nick/Liam design session.
 
+### Per-channel telemetry intervals: channel-id arg on SET_INTERVAL + per-channel structs — open (2026-06-23)
+
+`CMD_TELEMETRY_SET_INTERVAL` (Core `main.c` ~l.1023) hardcodes the **companion**
+scalar `telemetry_interval_s`; the command's CH_ID field is used *only* to route the
+RES back, **not** to pick which stream to retune. So `iridium_telemetry_interval_s`
+(and any future LoRa interval) can't be set over-air, and the two cadences live as
+ad-hoc sibling globals. Surfaced while structuring the MT→CMD→MO→RES loop test.
+
+**Proposed shape (Liam):** fold the per-link telemetry config into **per-channel
+structs** — each channel owns its UART handle + interval (and a natural home for its
+seq policy and priority class) — and have SET_INTERVAL carry a **channel id** that
+maps the value directly onto the addressed channel's struct. Turns two special-cased
+scalars into one indexable table; every link's cadence becomes independently tunable
+from the ground.
+
+Sub-decision: the command already has a CH_ID (reply-routing). Decide whether the
+*target* stream reuses that same CH_ID (you retune the link you reply on) or takes a
+**separate** arg (decouple "which stream to tune" from "where to send the RES").
+
+Dovetails with the two questions above — the per-channel struct is the obvious home
+for the per-link seq policy (mirror-vs-increment) and the per-class priority
+(RES-never-drop / TEL-rolling). Defer; do alongside Step 5 / the Nick session.
+
 ### MT acknowledgement timing: when is an inbound command "done"?
 
 `rbAcknowledgeReceiveHeadAsync()` removes the head of the MT queue,
