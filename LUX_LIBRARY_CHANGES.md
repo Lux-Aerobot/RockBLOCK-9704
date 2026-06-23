@@ -116,6 +116,39 @@ changes upstream behavior — hence this section.
   tidy is optional).
 - **Revert:** restore the two `receiveJspr(&response, "X")` calls.
 
+### 4. Reset `moQueuedMessages` in `imtQueueInit` — `src/imt_queue.c`
+
+- **What:** added `moQueuedMessages = 0;` to `imtQueueInit()` (alongside the
+  `imtMo.count = 0` reset), so the async-MO in-flight counter is cleared on every
+  queue init. `imtQueueInit` is called from `rbBegin`, so the counter is now
+  reset on every modem bring-up.
+- **Why:** upstream increments `moQueuedMessages` in `rbSendMessageAsync`
+  ([rockblock_9704.c](src/rockblock_9704.c) ~l.636) but only ever decrements it
+  in `imtQueueMoRemove` ([imt_queue.c](src/imt_queue.c) ~l.142), and never resets
+  it. `imtQueueInit` zeroes `imtMo.count` but left `moQueuedMessages` untouched.
+  So a **modem down→up cycle without an MCU reset** (e.g. our button shutdown →
+  restart) leaves the counter stale at ≥1 while the queue count is back to 0.
+  On the next async send, `if (moQueuedMessages == 0)` is false → the code takes
+  the *"already in flight"* branch, returns "queued" **without ever sending
+  `PUT messageOriginate`**, and jams the depth-1 queue (`IMT_QUEUE_SIZE = 1`):
+  the first MO logs "queued" with no JSPR, every subsequent MO is rejected
+  (queue full), and no MO leaves the modem until a full MCU reset. (Observed on
+  the bench 2026-06-23: MO worked once, then went dead across modem restarts;
+  cured instantly by a power-cycle, then permanently by this reset. See
+  `LUX_DEVLOG.md` 2026-06-23.)
+- **Footgun watch:** low. This only clears a counter at queue-init time, matching
+  the existing `imtMo.count = 0` reset. The one behavioral edge: if upstream ever
+  intended `rbBegin` to *resume* an MO that was mid-flight across a re-init, this
+  would drop that intent — but the queue buffer itself is already wiped by
+  `imtQueueInit`, so there was nothing coherent to resume. Net: brings the two
+  counters back into lockstep.
+- **Upstream bug:** worth reporting to rock7 — `moQueuedMessages` outlives the
+  queue it counts. Related to the blocking `rbSendMessage*` paths
+  (rockblock_9704.c l.379/401/423) which share this same counter with the async
+  path; not touched here.
+- **Revert:** remove the single `moQueuedMessages = 0;` line in `imtQueueInit`.
+  `git log --oneline -- src/imt_queue.c LUX_LIBRARY_CHANGES.md`.
+
 ---
 
 ## Known upstream issues we have NOT changed (tracked, not yet patched)

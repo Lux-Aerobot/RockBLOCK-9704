@@ -2081,3 +2081,52 @@ Companion + actuators deliberately untouched. Builds clean (Debug; text ~92.7 KB
 the untracked `Core/Src/lux-node-companion.code-workspace` is a stray, don't commit
 it. **Next:** two-board bench test (companion + Iridium loops), then commit the
 branch.
+
+---
+
+## 2026-06-23 — Bench bug: stale `moQueuedMessages` jams all MO after a modem restart (library fix) 🐛
+
+**Symptom (two-board bench, Core handing telem to the manager):** after a clean
+boot the manager reached RUNNING fine, then the very **first** Core line logged
+`MO queued 103 B (topic 244) <- core` **with no `SENT:`/`RECEIVED:` JSPR before it**,
+and every subsequent line was `MO REJECTED … (queue full)`. The whole JSPR bus went
+silent — no MO out, no unsolicited frames echoed. Liam's tell: *"on an earlier run
+I saw the modem take a first message; haven't since."*
+
+**Root cause — counter/queue desync that survives a modem restart.** The async-MO
+path uses two counters for one thing: `imtMo.count` (the real queue) and
+`moQueuedMessages` (the "in-flight" tally). `rbSendMessageAsync` only sends
+(`PUT messageOriginate`) when `moQueuedMessages == 0`
+([rockblock_9704.c](src/rockblock_9704.c) ~l.625); otherwise it takes the
+*"already in flight"* branch and returns "queued" **without sending**.
+`moQueuedMessages` is incremented on send (~l.636), decremented **only** in
+`imtQueueMoRemove` ([imt_queue.c](src/imt_queue.c) ~l.142), and **never reset**.
+`imtQueueInit` (run by `rbBegin`) zeroes `imtMo.count` but left `moQueuedMessages`
+alone — so a **modem down→up without an MCU reset** (our button shutdown→restart)
+leaves it stale at ≥1 while the queue is empty. From then on, every async MO skips
+the actual send and jams the depth-1 queue (`IMT_QUEUE_SIZE = 1`); nothing leaves
+the modem until a full MCU power-cycle re-zeroes the global. This directly ties to
+the **2026-06-22 caveat** above (clearing the software queue can orphan an in-flight
+message) — same two-counter fragility, other direction.
+
+**Confirmed at the bench (Liam):** 1st RUNNING = modem-only cycle → jammed (MO queued,
+no JSPR, then rejects). 2nd RUNNING = **after MCU reset** → full healthy dance:
+`PUT messageOriginate` → `200 message_accepted (message_id 1)` →
+`299 messageOriginateSegment` → `PUT segment` (base64 telem, 105 B) → `200`, with
+signal climbing to 2 bars / `visible:yes`. Provisioning also re-confirmed live:
+`244=RAW` (+ Cloudloop colour topics 313–317), `max_queue_depth:99` on the
+modem side — note the **modem** holds 99, but our **library** queue is depth 1.
+
+**Fix (🟡 shared-path, logged in `LUX_LIBRARY_CHANGES.md` #4):** added
+`moQueuedMessages = 0;` to `imtQueueInit()` so the in-flight tally resets in lockstep
+with `imtMo.count` on every `rbBegin`. One line; brings the two counters back into
+sync across modem restarts. Flagged as an upstream bug to report to rock7
+(`moQueuedMessages` outlives the queue it counts; the blocking `rbSendMessage*`
+paths share the same counter and have the same latent hazard — untouched here).
+
+**Process note:** the bug had been masked the whole time — single-MO bench runs
+(S1, the 2026-06-22 over-air "HELLO LUX") each happened on a fresh boot, so the
+counter was always 0. It only surfaced once we exercised a **restart-then-send**,
+which is exactly what the two-board steady-telemetry loop does. Validates keeping
+`DEBUG` trace on for these — the *absence* of `SENT:` next to "MO queued" is what
+cracked it.

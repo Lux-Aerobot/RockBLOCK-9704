@@ -193,6 +193,15 @@ void imtQueueInit(void)
     imtMo.tail = 0;
     imtMo.count = 0;
     imtMo.maxLength = IMT_QUEUE_SIZE;
+    /* LUX (shared-path): reset the async-MO in-flight counter in lockstep with
+     * the queue it tracks. Upstream increments moQueuedMessages in
+     * rbSendMessageAsync but only decrements it in imtQueueMoRemove(); a modem
+     * down->up cycle re-runs imtQueueInit (via rbBegin) which zeroes
+     * imtMo.count here, leaving moQueuedMessages stale. A stale value > 0 forces
+     * every later async MO down the "already in flight" branch (no
+     * PUT messageOriginate is ever sent), jamming the depth-1 queue until the
+     * next full MCU reset. See LUX_LIBRARY_CHANGES.md #4. */
+    moQueuedMessages = 0;
 
     imtMt.head = 0;
     imtMt.tail = 0;
