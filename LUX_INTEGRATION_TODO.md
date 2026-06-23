@@ -337,6 +337,17 @@ Two coupled decisions surfaced wiring the Core→manager telemetry path:
    feeds the manager only when it has room) and/or a manager→Core accepted/full
    signal — part of the Step-5 ACTU ACK/ERR framing.
 
+**OBSERVED 2026-06-23 (no longer hypothetical):** ran the MT→CMD→MO→RES loop
+(`CMD;0;1;0;2` STATUS_GET as an MT). The MT delivered and the Core generated a valid
+RES (`RSP;…;2;0;0;uptime_s;9244;gnss_valid;0;telemetry_interval_s;5`), but the manager
+**rejected the 71 B RES (`MO REJECTED … queue full`)** because the depth-1 slot was
+occupied by a queued **TEL**, which then shipped (`MO complete id=2`). The RES — the
+thing the ground was waiting on — was dropped in favour of a periodic telemetry frame.
+**Structural, not a race:** with `IMT_QUEUE_SIZE = 1` + steady Iridium TEL, the slot is
+almost always TEL-occupied when a RES arrives, so interactive responses are
+systematically starved while telemetry flows. Confirms RES-preempts-TEL is required,
+not optional.
+
 For the Nick/Liam design session.
 
 ### Per-channel telemetry intervals: channel-id arg on SET_INTERVAL + per-channel structs — open (2026-06-23)

@@ -2198,3 +2198,31 @@ trace (signal climbing, bars 0, `visible:yes`); over-air completion is signal-bo
 not a firmware question. **Next:** commit the Core `feature/iridium-comms` branch
 (loop now validated end-to-end), then the deferred design items (telem seq
 mirror-vs-increment; RES>TEL priority + backpressure) with Nick.
+
+---
+
+## 2026-06-23 — MT→CMD→MO→RES loop: command path proven, RES dropped to queue contention ⚠️
+
+Ran the first inbound-command loop over-air: queued `CMD;0;1;0;2` (STATUS_GET) as an
+MT from Cloudloop. **Generation side fully proven; delivery of the RES is not — it was
+dropped by the MO queue policy.**
+
+Hops (manager + Core consoles):
+- **MT in:** `messageTerminate id=22` → segment (`data` = `CMD;0;1;0;2` + 2-B CRC,
+  13 B) → `MT complete id=22 OK` → `MT 11 B -> core: CMD;0;1;0;2`. Delivered + relayed.
+- **Core:** `RX LINE: CMD;0;1;0;2` → `CMD OK: status get` →
+  `TX RSP: RSP;9244615;1;0;2;0;0;uptime_s;9244;gnss_valid;0;telemetry_interval_s;5`.
+  Response shape exactly as predicted (result 0, detail 0; uptime 9244 s matches the
+  9244615 ms tick; gnss 0; companion interval 5). The command path is validated.
+- **RES back:** `MO REJECTED 71 B <- core (queue full)` — the reply was dropped.
+- **Shipped instead:** the TEL already in the depth-1 slot —
+  `messageOriginateStatus id=2 mo_ack_received` → `MO complete id=2 OK`.
+
+So a command response (RES) lost the single MO slot to a periodic telemetry frame
+(TEL) — the exact RES-below-TEL priority inversion. **Structural, not a race:** with
+`IMT_QUEUE_SIZE = 1` and the Core firing Iridium TEL every interval, the slot is almost
+always TEL-occupied when a RES arrives, so interactive responses are systematically
+starved whenever telemetry flows. Concrete justification for intelligent MO-queue
+management in the product (RES preempts; TEL rolling/droppable). Logged as OBSERVED
+under the `RES vs TEL priority` question in `LUX_INTEGRATION_TODO.md`. **Plan:
+implement the queue policy, then a real outdoor (open-sky) test tomorrow.**
