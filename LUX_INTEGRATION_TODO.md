@@ -420,6 +420,50 @@ observable on the bench rather than silent:
 Most fold into the MO-retry-wrapper + the Step-5 ACTU ACK/ERR framing. For the
 Nick/Liam session.
 
+### TEL-vs-TEL: should a fresh TEL preempt a *stale in-flight* TEL on the modem? — open (2026-06-24)
+
+Observed on the bench (Liam): with the depth-1 slot + latest-wins, a fresher TEL
+supersedes the *queued* slot (the `TEL superseded` logs) but does **not** cancel the
+*in-flight* (stale) TEL holding the modem — only a RES cancels. So while waiting for a
+pass the modem keeps the **oldest** frame; the freshest goes only after it. The first
+frame over-air can be up to one stuck-interval stale. (Matches the review's completeness
+critic: latest-wins is honored in the queued slot, not end-to-end to the modem.)
+
+**Option:** extend the cancel-preempt to TEL-vs-TEL — a fresh TEL cancels the in-flight
+stale TEL so the modem always holds the newest. **Not obviously right:**
+- *Churn.* TEL every interval, passes minutes apart → cancel + re-PUT the in-flight TEL
+  many times before it ever transmits — JSPR churn, and (if a pass starts mid-cancel)
+  `MESSAGE_CANCELLED_IN_TRANSIT` airtime billing — for a frame that wasn't transmitting.
+- If a pre-transit cancel needs a pass to resolve (the open question we're testing),
+  cancel-replacing the in-flight TEL is pointless until a pass anyway.
+- More cancel traffic = more exposure to the stale-cancel / id-reuse race.
+
+**Cleaner alternatives:** refresh the in-flight TEL *just-in-time* — only when a pass is
+imminent (signal returns / the segment exchange begins) — or accept one-interval
+staleness (usually fine for periodic telemetry). For the Nick session; folds into the
+MO-queueing-policy.
+
+### Core companion-link RX (commands) regression — lux-node-core, 2026-06-24
+
+A command injected on the Core's companion link (luxctl → companion sw → serial)
+produced **zero `RX LINE`** on the Core, though the Core's companion *TX* (telemetry) is
+received fine by the companion sw. The Core *does* poll + dispatch companion RX
+(`lux-node-core` `main.c` ~l.1842, `HAL_UART_Receive(&hlpuart1, …, 1, 0)` →
+`handle_external_rx_byte`; LPUART1 = `TX_RX`), so the dispatch path exists.
+
+**Prime suspect: the `feature/iridium-comms` UART reorg moved companion → LPUART1.**
+Companion comms were "solid for months" on the *old* UART; companion **RX on LPUART1 is
+new and was never exercised** (only the Iridium IT-RX was wired/proven). LPUART1 is a
+distinct peripheral (different clock source / BRR formula / errata) from a regular USART.
+
+Diagnosis leads: (a) confirm LPUART1 actually clocks/receives (loopback one byte);
+(b) check for an **overrun (ORE) wedge** — polled timeout-0 RX interleaved with blocking
+large-TEL TX can latch ORE, after which `HAL_UART_Receive` never returns OK again;
+(c) confirm companion RX worked *before* the reorg. Likely real fix = give companion RX
+the same **polled → interrupt-ring** treatment as the Iridium link (the "don't touch the
+companion" deferral is now the blocker for companion command injection). Workaround for
+testing: inject via the manager USART3 directly, or a real MT through the 9704.
+
 ### Per-channel telemetry intervals: channel-id arg on SET_INTERVAL + per-channel structs — open (2026-06-23)
 
 `CMD_TELEMETRY_SET_INTERVAL` (Core `main.c` ~l.1023) hardcodes the **companion**
