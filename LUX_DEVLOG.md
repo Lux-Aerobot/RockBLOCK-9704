@@ -2318,3 +2318,27 @@ never billed. Replaces the "non-TEL ⇒ RES" default. (`RSP;` confirmed as the r
 the manual `RES;` test convention retired.) A Core-link parser-sync/line-reset on bring-up
 (flush re-attach glitches, modem-side style) is logged in the TODO as a belt-and-suspenders
 nice-to-have — the gate already drops glitch lines.
+
+---
+
+## 2026-06-24 — ⭐⭐⭐ CAPSTONE: full bidirectional loop over-air into the production stack (ground CMD → Core → RES → DB/Grafana)
+
+Outdoor run, real Core attached. The complete bidirectional node, closed end-to-end over
+Iridium and landing in the production data store + dashboards:
+
+- **Ground → device:** `CMD;0;1;0;2` (STATUS_GET) sent as an **MT** from Cloudloop (`Q01E…` =
+  `CMD;0;1;0;2`) → fully delivered to the 9704 (pulse trail Received → Identified → Encoded →
+  Sent → Delivered MT, 18:40:40). Via the **production path** — MT through the 9704 → manager
+  `relay_mt_to_core` → Core's iridium RX — *not* the broken companion link.
+- **Device → response:** Core parsed it, the outbox queued the RSP, and ~7 min later (on a
+  pass) it returned as a **69 B MO** (18:47:50), decoding clean:
+  `RSP;831815;1;0;2;0;0;uptime_s;831;gnss_valid;0;telemetry_interval_s;5`.
+- **Into the stack:** the RSP is parsed + stored — Grafana "Command Logs" shows `cmd_id 2,
+  result_code 0, data: uptime_s;831;gnss_valid;0;telemetry_interval_s;5`. And "Node 1
+  Telemetry" fills with `TEL` rows where satellite frames carry a `cloudloop_id` and companion
+  frames show `nv-lenovo` — **both sources merged in one table** (the unified telemetry model).
+
+So: ground command in → device → response out → DB → dashboard, and telemetry the same path,
+all over satellite. From `rbBegin OK → RUNNING` first contact (2026-05-31) to a complete
+bidirectional comms node feeding the ops stack in ~3.5 weeks. Everything built today — RES
+priority, signal-gated TEL supersede, the line gate — is exercised in this real loop. 🛰️
