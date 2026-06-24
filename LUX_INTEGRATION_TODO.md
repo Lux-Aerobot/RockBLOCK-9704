@@ -428,7 +428,7 @@ over-air *transmit* of the surviving RES is pass-gated). Also: the modem assigne
 post-cancel RES **id=2, not reusing id=1** — a data point that the stale-cancel/id-reuse
 race is unlikely (ids observed incrementing, not recycled).
 
-### TEL-vs-TEL: should a fresh TEL preempt a *stale in-flight* TEL on the modem? — open (2026-06-24)
+### TEL-vs-TEL: should a fresh TEL preempt a *stale in-flight* TEL on the modem? — RESOLVED (signal-gated), implemented 2026-06-24
 
 Observed on the bench (Liam): with the depth-1 slot + latest-wins, a fresher TEL
 supersedes the *queued* slot (the `TEL superseded` logs) but does **not** cancel the
@@ -448,8 +448,15 @@ stale TEL so the modem always holds the newest. **Not obviously right:**
 
 **Cleaner alternatives:** refresh the in-flight TEL *just-in-time* — only when a pass is
 imminent (signal returns / the segment exchange begins) — or accept one-interval
-staleness (usually fine for periodic telemetry). For the Nick session; folds into the
-MO-queueing-policy.
+staleness (usually fine for periodic telemetry).
+
+**Decided + implemented 2026-06-24 (manager `main.c`):** signal-gated supersede — a fresh
+TEL cancels a stale in-flight TEL **only while there's no pass** (`!constellationVisible`),
+so the modem holds the freshest frame through the long waits but we never cancel one mid
+over-air transmit (avoids airtime waste + the short-interval starvation risk). A RES still
+preempts unconditionally. Today's finding that a pre-transit cancel is local + free is what
+made this cheap. `outbox_preempt_inflight_tel(why, gate_on_signal)`; `g_signalPresent` from
+`onConstellationState`.
 
 ### Core companion-link RX (commands) regression — lux-node-core, 2026-06-24
 
