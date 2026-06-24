@@ -420,6 +420,14 @@ observable on the bench rather than silent:
 Most fold into the MO-retry-wrapper + the Step-5 ACTU ACK/ERR framing. For the
 Nick/Liam session.
 
+**Update 2026-06-24 (bench-validated):** the **pre-transit cancel resolves locally — no
+satellite pass needed** (`200 cancellation_response:"cancelling_message"` → `299
+final_mo_status:"message_cancelled_pre_transit"`, within one rbPoll cycle at `sig=0`). So
+RES-preempts-TEL is real-time, and the no-pass-*cancel*-wedge worry above is moot (only the
+over-air *transmit* of the surviving RES is pass-gated). Also: the modem assigned the
+post-cancel RES **id=2, not reusing id=1** — a data point that the stale-cancel/id-reuse
+race is unlikely (ids observed incrementing, not recycled).
+
 ### TEL-vs-TEL: should a fresh TEL preempt a *stale in-flight* TEL on the modem? — open (2026-06-24)
 
 Observed on the bench (Liam): with the depth-1 slot + latest-wins, a fresher TEL

@@ -2226,3 +2226,44 @@ starved whenever telemetry flows. Concrete justification for intelligent MO-queu
 management in the product (RES preempts; TEL rolling/droppable). Logged as OBSERVED
 under the `RES vs TEL priority` question in `LUX_INTEGRATION_TODO.md`. **Plan:
 implement the queue policy, then a real outdoor (open-sky) test tomorrow.**
+
+---
+
+## 2026-06-24 — ⭐ RES-preempts-TEL VALIDATED indoors; pre-transit cancel resolves LOCALLY (no pass)
+
+Bench test of the RES-priority outbox (manager `39413e6`, lib via submodule `1b5829e`
+with upstream #68). Drove the manager's USART3 directly with PuTTY (companion→Core
+injection is down — separate bug, see below). **The preempt works end-to-end indoors,
+and it answers the open cancel-resolution question.**
+
+Sequence (manager console):
+- Typed a `TEL;…` line → `outbox -> TEL 11 B (id=1)` → modem accepts (id=1) → segment
+  exchange completes → TEL id=1 in-flight, stalls at sig=0 (`MO in-flight 30s id=1 (TEL)
+  — awaiting modem`). More TELs latch silently / `TEL superseded` (latest-wins on the
+  queued slot, as designed).
+- Typed a non-`TEL;` line → `RES queued 13 B (fifo=1)` → **preempt**:
+  - `SENT: PUT messageOriginateStatus {message_id:1, action:"cancel"}`
+  - `RES preempts in-flight TEL id=1 -> cancel sent`
+  - `RECEIVED: 200 messageOriginateStatus {message_id:1, cancellation_response:"cancelling_message"}`
+  - `RECEIVED: 299 messageOriginateStatus {message_id:1, final_mo_status:"message_cancelled_pre_transit"}`
+  - `MO complete id=1 status=FAIL (TEL,cancel-requested)`
+  - `outbox -> RES 13 B (id=2)` → RES segment exchange → RES id=2 in-flight, awaiting a pass.
+
+**THE ANSWER: a pre-transit cancel resolves locally — NO satellite pass needed.** The
+modem acked the cancel synchronously (`200 … cancellation_response:"cancelling_message"`)
+and emitted the final status (`299 … message_cancelled_pre_transit`) within one rbPoll
+cycle, at `sig=0` indoors. So RES-preempts-TEL is **real-time, not pass-gated.** (The
+earlier "cancel acks without sky" call holds; the review's skepticism is refuted by HW.
+The 30 s stall-warns are benign "awaiting a pass to *transmit over-air*," not cancel
+wedges — so the no-pass-wedge concern is moot for the cancel itself.)
+
+**Validated:** the full preempt mechanism on real hardware, indoors (classify → cancel
+in-flight TEL → slot frees → RES sends). **Pending:** open-sky confirmation that the
+preempting RES actually transmits over-air and reaches Cloudloop (RES id=2 is correctly
+holding the slot awaiting a pass — over-air delivery is signal-bound). **Two side
+findings:** (1) the modem assigned the RES **id=2, not reusing id=1** → the stale-cancel/
+id-reuse race is even less likely. (2) the true status `message_cancelled_pre_transit` is
+visible in the JSPR trace → the "expose `jsprFinalMoStatus` through `moMessageComplete`"
+follow-on would surface it cleanly. **Aside:** companion→Core command injection is down
+(companion-RX regression + a non-command feedback storm — both in `LUX_INTEGRATION_TODO.md`
+and a spawned task); the PuTTY-direct-to-manager path sidestepped it cleanly.
