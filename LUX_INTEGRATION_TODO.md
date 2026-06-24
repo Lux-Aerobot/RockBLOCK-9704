@@ -467,6 +467,20 @@ non-printable / unrecognized lines, logged), so this is belt-and-suspenders: a p
 line-buffer reset on Core-link bring-up (mirroring the modem-side `\r` flush) would discard the
 glitch burst at the source rather than rejecting it per-line. Low priority given the gate is in.
 
+### Gate: strip leading garbage to a TEL;/RSP; marker instead of rejecting the whole line — nice-to-have (2026-06-24)
+
+The strict gate (landed 2026-06-24) rejects a glitch-prefixed line outright, which also drops
+the *real* message buried after the garbage (e.g. `[0x00 ×70]RSP;…` loses the response).
+Refinement (Liam): instead of rejecting, **scan for the first `TEL;`/`RSP;` marker, discard
+everything before it, and process from the marker** — salvaging the real frame from a
+connection-glitch prefix. Most valuable for the **RES lane** (don't lose a response to a plug-in
+glitch; telemetry is droppable anyway). Nuances to settle: scan for the *first* valid marker
+(guard against a spurious marker inside random garbage — low risk with null bursts); and still
+validate the *remainder* is clean (reject on **embedded** non-printable after the marker, not
+just leading). Complementary to the parser-sync above — strip is per-line *recovery*,
+parser-sync is source-level *flush*; this one recovers data, so it's arguably the better single
+choice. Either folds into the Step-5 ACTU framing.
+
 ### Core companion-link RX (commands) regression — lux-node-core, 2026-06-24
 
 A command injected on the Core's companion link (luxctl → companion sw → serial)
