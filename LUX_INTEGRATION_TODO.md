@@ -464,6 +464,28 @@ the same **polled → interrupt-ring** treatment as the Iridium link (the "don't
 companion" deferral is now the blocker for companion command injection). Workaround for
 testing: inject via the manager USART3 directly, or a real MT through the 9704.
 
+### Core line-handler error-responds to non-command lines → feedback storm on echo/loopback — lux-node-core, 2026-06-24
+
+Observed (Liam): unplugging the companion connector from the Core triggered a ~90/s
+storm on the Core console — `TX RSP: RSP;<tick>;1;<seq>;0;2;1;` / `RX LINE: RSP;…;0;2;1;`
+/ `CMD ERR: parse failed`, repeating, seq climbing. The Core is feeding itself.
+
+Two parts:
+- **Firmware (the real bug):** `handle_external_rx_line` treats ANY non-`CMD;` line as a
+  parse failure and replies with an error RSP (`cmd_id=0,result=2,detail=1`) **out the
+  arrival channel** (`physical_channel`). A looped/echoed RSP starts with `RSP;` → parse
+  fails → another error RSP → echoes → infinite. A node must NOT parse responses/telemetry
+  as commands nor error-respond to them: **ignore `RSP;`/`TEL;` lines, and never emit a
+  command-error-response that can re-enter as input.** On any reflecting link this
+  self-sustains and hogs the CPU (~90 loops/s of parse + blocking TX + 3 console prints),
+  starving telemetry/iridium/actuator timing — a disconnected link should never DoS the Core.
+- **Electrical (the trigger):** unplugged → LPUART1 RX floats and couples to its own
+  LPUART1 TX, echoing the Core's output back in. Bench-diagnosable; the firmware fix makes
+  it harmless regardless.
+
+Same handler/link as the companion-RX-delivery regression above — fold the "ignore
+non-CMD lines / don't self-feed" hardening into that fix.
+
 ### Per-channel telemetry intervals: channel-id arg on SET_INTERVAL + per-channel structs — open (2026-06-23)
 
 `CMD_TELEMETRY_SET_INTERVAL` (Core `main.c` ~l.1023) hardcodes the **companion**
