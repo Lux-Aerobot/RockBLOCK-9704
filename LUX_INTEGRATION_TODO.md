@@ -383,6 +383,43 @@ not optional.
 
 For the Nick/Liam design session.
 
+### RES outbox — review follow-ons (2026-06-24, outbox implemented + reviewed)
+
+The manager-side RES-priority outbox is implemented (RES FIFO depth 4 / TEL
+latest-wins / cancel-preempt via #68 `rbCancelMessage`). An adversarial review
+confirmed the preemption, FIFO, and re-entrancy logic is sound, and surfaced these
+follow-ons. **None block the open-sky preempt test** — loud logs were added so each is
+observable on the bench rather than silent:
+
+- **RES durability (retry on FAIL).** A RES that *starts* then FAILs on the network is
+  currently **dropped** — the outbox pops it at send time, not delivery. We now log
+  `** RES LOST **`, but the real fix is the **MO-retry-wrapper** above: pop a RES only
+  on `moMessageComplete(OK)`, re-arm on FAIL with a bounded retry count (leave the
+  cancelled-TEL FAIL path alone). Honors the "RES never lost" goal.
+- **Stale-cancel + 8-bit id reuse (verify on HW first).** Modem message ids are
+  `uint8_t`, modem-assigned. If a TEL's natural ACK crosses our cancel and the modem
+  then reuses that id for the next RES, a stale cancel could abort the RES. Low
+  probability; depends on **unverified** modem id-reuse / cancel-application timing.
+  **Action: capture a real cancel trace** before engineering a guard — (a) does a
+  pre-transit cancel resolve locally with no pass, or wait for one? (b) does the modem
+  reuse a just-freed id immediately? The `** RES LOST **` log is the tripwire meanwhile.
+- **True final status not visible.** The library collapses every non-ack final
+  (`network_error` / `expired` / `cancelled_pre`/`in_transit` / CRC) to `FAIL` before
+  `moMessageComplete`. To log *why* an MO failed — and the pre- vs in-transit cancel
+  that drives billing — pass `jsprFinalMoStatus_t` through the callback (upstream lib
+  change; candidate for the rock7 PR set).
+- **Cost of cancel-in-transit.** A TEL already mid-segment when preempted still bills
+  airtime, and the RES re-sends. Acceptable for rare RES; surface in/pre-transit once
+  the true final status is exposed (above).
+- **No-pass liveness.** If the modem holds an in-flight MO with no pass, the single slot
+  stays busy until a pass or an operator modem restart — the library slot **cannot** be
+  force-freed cleanly from the manager (force-clearing only our flag desyncs us and
+  fails the next send). The RES is **not lost** — it waits in the FIFO. A one-shot
+  `MO in-flight Ns … awaiting modem` log makes the wait visible vs a hang.
+
+Most fold into the MO-retry-wrapper + the Step-5 ACTU ACK/ERR framing. For the
+Nick/Liam session.
+
 ### Per-channel telemetry intervals: channel-id arg on SET_INTERVAL + per-channel structs — open (2026-06-23)
 
 `CMD_TELEMETRY_SET_INTERVAL` (Core `main.c` ~l.1023) hardcodes the **companion**
