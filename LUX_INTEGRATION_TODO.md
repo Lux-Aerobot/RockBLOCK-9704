@@ -458,6 +458,15 @@ preempts unconditionally. Today's finding that a pre-transit cancel is local + f
 made this cheap. `outbox_preempt_inflight_tel(why, gate_on_signal)`; `g_signalPresent` from
 `onConstellationState`.
 
+### Core-link parser-sync / line-reset on bring-up — nice-to-have (2026-06-24)
+
+Plugging the Core connector into a running manager dumps framing-error `0x00` bytes onto
+USART3 that the line assembler swallows (seen 2026-06-24: a ~70-null + `TEL;` line went up as
+a garbage MO). The **strict line gate** now rejects such lines (manager `classify_line` drops
+non-printable / unrecognized lines, logged), so this is belt-and-suspenders: a parser-sync /
+line-buffer reset on Core-link bring-up (mirroring the modem-side `\r` flush) would discard the
+glitch burst at the source rather than rejecting it per-line. Low priority given the gate is in.
+
 ### Core companion-link RX (commands) regression — lux-node-core, 2026-06-24
 
 A command injected on the Core's companion link (luxctl → companion sw → serial)

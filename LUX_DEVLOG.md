@@ -2299,3 +2299,22 @@ Cloudloop. Signal-gated TEL-supersede was also exercised earlier in the same run
 (no log); added `TEL held N B (behind in-flight RES id=M)` so a held frame is visible.
 **Next:** outdoor afternoon run with the real Core re-attached (Core→manager→Iridium full
 loop under open sky).
+
+---
+
+## 2026-06-24 — Core-link MO gate: reject non-printable / unrecognized lines (a glitch billed airtime on garbage)
+
+Outdoor run, Core re-attached: plugging the Core connector into the running manager dumped a
+burst of `0x00` framing-error bytes onto USART3; the line assembler prefixed them to the first
+real TEL, so an MO went up as ~70 nulls + `TEL;10;…`. Because it didn't start with `TEL;`, the
+old "non-TEL ⇒ RES" catch-all classified it as a **never-drop RES** — garbage that got
+*priority* AND burned airtime. Same class as the modem-side TXD glitch, but the Core link had
+no guard.
+
+Fix (manager `classify_line`): a **strict gate** — accept only printable-ASCII lines with a
+recognized prefix (`TEL;` → telemetry, `RSP;` → response/RES); reject everything else
+(non-printable or unrecognized) — dropped, logged (`line REJECTED … <- core`), never queued,
+never billed. Replaces the "non-TEL ⇒ RES" default. (`RSP;` confirmed as the response prefix;
+the manual `RES;` test convention retired.) A Core-link parser-sync/line-reset on bring-up
+(flush re-attach glitches, modem-side style) is logged in the TODO as a belt-and-suspenders
+nice-to-have — the gate already drops glitch lines.
