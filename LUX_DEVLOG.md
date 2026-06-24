@@ -2267,3 +2267,35 @@ visible in the JSPR trace → the "expose `jsprFinalMoStatus` through `moMessage
 follow-on would surface it cleanly. **Aside:** companion→Core command injection is down
 (companion-RX regression + a non-command feedback storm — both in `LUX_INTEGRATION_TODO.md`
 and a spawned task); the PuTTY-direct-to-manager path sidestepped it cleanly.
+
+---
+
+## 2026-06-24 — ⭐⭐⭐ RES-preempts-TEL CONFIRMED over-air: RES + held TEL both in Cloudloop, in priority order
+
+Serendipity — a satellite pass arrived mid bench-test (still PuTTY-direct to the manager),
+so the indoor preempt run finished its over-air leg live.
+
+The in-flight RES (id=3, which had preempted two TELs and was holding the slot at `sig=0`)
+transmitted the moment the pass came:
+- `299 constellationState {visible:true, bars:2→5}` (pass arrives)
+- `299 messageOriginateStatus {message_id:3, final_mo_status:"mo_ack_received"}`
+- `MO complete id=3 status=OK (RES)`
+- → slot frees → `outbox -> TEL 21 B (id=4)` — the TEL queued behind the RES takes the freed
+  slot and goes up the **same pass**.
+
+**Cloudloop confirms both, in priority order:**
+- `16:33:58  MO↑  RES;9;8;7;4;5;6;3;2;1` (21 B, hex `5245533B…`)
+- `16:34:09  MO↑  TEL;4;5;6;4;5;6;4;5;6` (21 B, hex `54454C3B…`)
+
+**RES first, the held TEL 11 s later** — the manager's RES>TEL priority preserved end-to-end
+to the gateway. This is the over-air confirmation that was pending, and it validates the
+queued-TEL-after-RES handoff for real (the held TEL was never lost — it flowed the instant
+the RES cleared). **The outbox is proven end-to-end:** classify → RES preempts in-flight TEL
+(local pre-transit cancel) → RES transmits over-air first → held TEL transmits next, both to
+Cloudloop. Signal-gated TEL-supersede was also exercised earlier in the same run
+(`fresh TEL preempts in-flight TEL id=1` at `sig=0`).
+
+**Observability follow-up closed:** a TEL parked behind an in-flight RES latched silently
+(no log); added `TEL held N B (behind in-flight RES id=M)` so a held frame is visible.
+**Next:** outdoor afternoon run with the real Core re-attached (Core→manager→Iridium full
+loop under open sky).
