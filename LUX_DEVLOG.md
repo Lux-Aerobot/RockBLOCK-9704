@@ -2342,3 +2342,65 @@ So: ground command in → device → response out → DB → dashboard, and tele
 all over satellite. From `rbBegin OK → RUNNING` first contact (2026-05-31) to a complete
 bidirectional comms node feeding the ops stack in ~3.5 weeks. Everything built today — RES
 priority, signal-gated TEL supersede, the line gate — is exercised in this real loop. 🛰️
+
+
+---
+
+## 2026-07-24 — Production board port: L431 SATCOM Interface — builds, flashes, runs ✅
+
+The bringup firmware is ported off the Nucleo-L452RE onto the production **SATCOM
+Interface board (STM32L431CBT6)**, in its own repo (`lux-node-modem-manager`).
+CubeMX-generated + validated baseline, RB9704 fork linked as a submodule (same pin),
+the app layer lifted from the bringup `main.c` and adapted to the board. **Builds
+clean, flashes, and runs — no-modem bring-up hardware-validated.**
+
+**Architectural deltas from the Nucleo POC (per JC's board doc):**
+- **No MCU power gate.** Modem +5 V *and* the MCU's own +3.3 V both hang off the
+  host's `en_SATCOM` rail (LMR36520 buck). The MCU can't power-cycle the modem and
+  can't run while it's off — so `PWR_EN` is gone and STARTUP/SHUTDOWN/FAULT collapse
+  to **I_EN sequencing only**. A real power cycle is the host's job (toggling
+  `en_SATCOM` also resets this MCU). FAULT with `I_BTD` stuck low has no actuator
+  (can't drive I_EN — interlock), so it safes what it can and waits for a host
+  power-cycle / `CMD;BOOT` — **confirmed correct (Liam)**; Core-automated recovery
+  comes later once the manager↔Core path is live.
+- **Auto-start on boot.** Board is only powered when the host wants the modem up, so
+  boot ⇒ run STARTUP (safe inputs first, short settle, then I_EN high).
+- **Pins:** modem USART1 **PB6/PB7**, Core link USART3 **PB10/PB11**, console
+  **LPUART1 PA2/PA3** (was the Nucleo USART2 VCP). `I_EN` PB5, `I_BTD` PA11.
+- **PA9 landmine:** on the Nucleo PA9 was the USART1-TX force-low target; here PA9 is
+  `I_WK_O` and TX moved to PB6 — the safe-low helper re-pointed accordingly.
+  `I_WK_O`/`I_WK_I`/`SATCOM_INT` reserved (no behavior yet), `I_WK_O` held low.
+
+**Hardware bring-up (no modem attached), console exact to spec:**
+`--> STARTUP @33 ms → I_EN high @134 (101 ms settle) → FAULT "I_BTD never went HIGH"
+@10136 (10 002 ms) → parks clean, no watchdog loop.` One shot validates the clock
+(timestamps are true ms), LPUART1 console, GPIO sequencing (I_EN drive + I_BTD read
+through the pull-down), IWDG petting, and the FAULT-safe path. Nick added the
+Core-side `en_SATCOM` rail control the same day.
+
+**STAT telemetry line (new).** The manager emits a periodic status line to the Core
+over USART3: `STAT,<state>,<tempDeciDegC>,<visible>,<bars>,<signal>\r\n`, every
+`g_stat_period_ms` (default 1000). State is the string name; constellation fields
+come from the async `onConstellationState` cache (no blocking); board temp is
+refreshed on a slower `g_temp_poll_ms` (default 10000, RUNNING only). **Why the split
+cadence:** `rbGetBoardTemp()`/`rbGetSignal()` are blocking JSPR round-trips whose
+`waitForJsprMessage()` *discards* unsolicited frames and can stall ~1 s — so polling
+them per-STAT during RUNNING would swallow MT/MO status frames `rbPoll` needs. Temp
+is the only field with no async source, so it's polled sparingly; everything else
+rides the callbacks. (A first idea to raw-mirror the whole console onto the Core link
+was scrapped for this structured line; console stays on LPUART1.)
+
+**Toolchain gotchas (both fixed; noted so they don't recur):**
+- CubeIDE kept a stale cached project model after `.cproject` was hand-edited →
+  library include paths missing from the generated makefile. Fix: close + reopen the
+  project so CDT re-reads `.cproject`.
+- Link failed: `non constant or forward reference address expression for section
+  .ARM.extab`. CubeMX 6.17 emits `(READONLY)` on `.ARM.extab / .ARM / .*_array`
+  (GCC11+ only); CubeIDE 1.12 bundles GCC 10.3, whose linker rejects it. Stripped
+  `(READONLY)` per the ST-generated in-script note. **Both re-appear on a CubeMX
+  regen**; the permanent fix is a GCC11+ toolchain.
+
+**Next:** plug in the 9704 (antenna first) and verify `rbBegin OK → RUNNING` on the
+production board; then the Core-side reconcile (`feature/iridium-comms` is off the
+Nucleo Core build and must land on the production Core build — cross-lineage) and the
+`CMD;` command grammar (= Step 5). Manager repo: 8 commits, first push pending.

@@ -94,6 +94,50 @@ steps 2+. See `LUX_DEVLOG.md` 2026-05-28 for the plan and rationale.
       - See `LUX_DEVLOG.md` 2026-06-16.
 - [ ] **Step 5** — wrap in ACTU-style text protocol. = POC complete.
 
+## Production board port (L431 SATCOM Interface) — 2026-07-24
+
+The 5-step POC firmware ported off the Nucleo-L452RE onto the production board
+(`lux-node-modem-manager` repo, STM32L431CBT6). Builds/flashes/runs; no-modem
+bring-up hardware-validated (see `LUX_DEVLOG.md` 2026-07-24).
+
+- [x] **Board port.** CubeMX L431 baseline (validated: pins/AF, deferred USART1,
+      IWDG ~8 s, 80 MHz clock, LPUART1 115200 8N1 console). RB9704 fork linked as a
+      submodule + wired into the CubeIDE build (`STM32_HAL`, 4 include paths,
+      source-folder preset exclusions).
+- [x] **No-power-gate adaptation.** `PWR_EN` removed; STARTUP/SHUTDOWN/FAULT are
+      I_EN-only. Auto-start on boot (board only powers when the host asserts
+      `en_SATCOM`). Pre-boot safing generalized to all modem inputs (PB6 TX + PA9
+      I_WK_O); PA9-landmine re-point handled. `I_WK_O`/`I_WK_I`/`SATCOM_INT` reserved.
+- [x] **STAT telemetry line.** `STAT,<state>,<tempDeciDeg>,<visible>,<bars>,<signal>`
+      to the Core every 1 s (`g_stat_period_ms`, runtime-configurable). Signal from
+      the async constellation cache; temp on a slow 10 s poll (`g_temp_poll_ms`) —
+      see the blocking-getter note below. Replaces an abandoned raw-console-mirror idea.
+- [~] **`CMD;` command hook (= Step 5 start).** `CMD;BOOT` / `CMD;DROP` recognized and
+      wired to the state machine (boot/drop = the I_EN↔I_BTD dance, no power actuator).
+      Full grammar + command acks are the real Step 5 (ACTU framing). Lines are now
+      assembled in every state so `CMD;` is honoured from IDLE/FAULT.
+- [x] **`en_SATCOM` rail control added Core-side** (Nick, 2026-07-24).
+- [ ] **Plug in the 9704, verify `rbBegin OK → RUNNING`** on production hardware
+      (antenna connected first).
+- [ ] **Core-side reconcile.** `feature/iridium-comms` is off the **Nucleo** Core
+      build; it must land on the **production** Core board build (cross-lineage port,
+      not a fast-forward) + implement the other half of the manager's USART3 contract
+      (`TEL;`/`RSP;` up, `CMD;BOOT`/`CMD;DROP` down, MT as lines, parse `STAT,`).
+
+**⚠ Library note — blocking getters discard async frames.** `rbGetBoardTemp()` and
+`rbGetSignal()` run `waitForJsprMessage()`, which loops `receiveJspr` and *discards*
+any non-matching frame (and can block up to its timeout, ~1 s). Calling them during
+async RUNNING can therefore swallow an unsolicited MT/MO-status frame that `rbPoll`
+needed. **Rule:** poll these sparingly (the STAT line polls temp at 10 s, never
+per-second) and never mix a sync getter into a tight async loop. Constellation data
+(visible/bars/level) should come from the `onConstellationState` callback, not
+`rbGetSignal()` (which returns bars only anyway).
+
+**Toolchain (CubeIDE 1.12 / GCC 10.3):** (1) a hand-edited `.cproject` needs a project
+close+reopen to be re-read (stale CDT cache); (2) strip `(READONLY)` from the
+CubeMX-6.17 linker script — GCC 10.3 `ld` rejects it (`.ARM.extab` "forward reference"
+error). Both re-appear on a CubeMX regen.
+
 ## Bring-up — outstanding
 
 - [ ] **GPIO startup/shutdown sequence for STM32 (16-pin connector).**
