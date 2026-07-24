@@ -2404,3 +2404,34 @@ was scrapped for this structured line; console stays on LPUART1.)
 production board; then the Core-side reconcile (`feature/iridium-comms` is off the
 Nucleo Core build and must land on the production Core build — cross-lineage) and the
 `CMD;` command grammar (= Step 5). Manager repo: 8 commits, first push pending.
+
+
+---
+
+## 2026-07-24 — Production uplink PROVEN end-to-end + STAT line bring-up 🛰️
+
+Same-day continuation of the L431 port: **with the 9704 attached, the production
+SATCOM board pushed telemetry all the way to Cloudloop.** `rbBegin OK → RUNNING`,
+then a `TEL;` passthrough line from the Core became a **139 B MO** landing in
+Cloudloop Data at 19:55 UTC (`TEL;11;2;1;60;15;17…`, IMT/Certus). The full uplink
+chain — Core → manager → 9704 → Iridium → Cloudloop → DB — runs on production
+hardware. Nick's `feature/iridium-comms` production reconcile is in.
+
+**STAT line — manager side proven, Core RX gap found.** The manager emits
+`STAT,<state>,<tempDeciDegC>,<visible>,<bars>,<signal>\r\n` on USART3 every 1 s
+(watched live on the LPUART1 console; CRLF-terminated; temp on the 10 s slow poll,
+signal from the async constellation cache). The lines didn't reach the Core at
+first — **root cause Core-side: no RX interrupt armed on the Core's manager-link
+line.** Why it hid until now: the proven telemetry only exercised **Core→manager**
+(Core TX / manager RX); STAT is the **opposite** direction (manager TX PB10 → Core
+RX), which nothing had tested. Same class as the logged *"Core companion-link RX
+regression"* — the iridium-comms UART reorg drops an RX IT / NVIC enable in the
+shuffle. Manager fully cleared (sending correctly, right format + direction); the
+fix is Core-side (arm `HAL_UART_Receive_IT` + enable the UART NVIC — mirror of the
+manager's `core_link_start`). Nick has it.
+
+**Next:** once the Core is seeing STAT, feed an **MT** (mobile-terminated) message
+from Cloudloop and confirm the manager catches it → `mtMessageComplete` →
+`relay_mt_to_core` out USART3 → Core. That exercises the **downlink** half
+(manager→Core), closing the bidirectional loop on production hardware and teeing up
+the `CMD;` command path (Step 5).
